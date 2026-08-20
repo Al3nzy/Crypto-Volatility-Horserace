@@ -112,7 +112,15 @@ def build_model(window_size: int, num_features: int) -> Model:
 # ──────────────────────────────────────────────────────────────
 # Training
 # ──────────────────────────────────────────────────────────────
-def train_model(model: Model, X_train, y_train, X_test=None, y_test=None):
+def train_model(
+    model: Model,
+    X_train,
+    y_train,
+    X_test=None,
+    y_test=None,
+    epochs: int = EPOCHS,
+    verbose: int = 1,
+):
     """
     Train with EarlyStopping on a held-out validation split from train (not test).
     X_test, y_test are kept for backward compatibility but no longer used in fit.
@@ -120,17 +128,17 @@ def train_model(model: Model, X_train, y_train, X_test=None, y_test=None):
     cb = [
         callbacks.EarlyStopping(
             monitor="val_loss", patience=PATIENCE,
-            restore_best_weights=True, verbose=1,
+            restore_best_weights=True, verbose=verbose,
         ),
         callbacks.ReduceLROnPlateau(
-            monitor="val_loss", factor=0.5, patience=7, verbose=1,
+            monitor="val_loss", factor=0.5, patience=7, verbose=verbose,
         ),
     ]
     history = model.fit(
         X_train, y_train,
         validation_split=VALIDATION_SPLIT,
-        epochs=EPOCHS, batch_size=BATCH_SIZE,
-        callbacks=cb, verbose=1,
+        epochs=epochs, batch_size=BATCH_SIZE,
+        callbacks=cb, verbose=verbose,
     )
     return history
 

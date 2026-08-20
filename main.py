@@ -41,7 +41,7 @@ from config import (
     LOOKBACK_WINDOW, FORECAST_HORIZON, EXPERIMENT_HORIZONS,
     TRANSACTION_COST_BPS, MC_DROPOUT_PASSES, MC_INTERVAL_ALPHA,
     SENSITIVITY_MISSING_RATES, SENSITIVITY_NOISE_STD_RATES,
-    REPRO_SEEDS, WALKFORWARD_MIN_TRAIN, WALKFORWARD_STEP,
+    REPRO_SEEDS, WALKFORWARD_MIN_TRAIN, WALKFORWARD_STEP, WALKFORWARD_EPOCHS,
     USE_POOLED_DL_TRAINING, SEED,
 )
 
@@ -182,7 +182,7 @@ def run_walkforward_dl(pipeline, feature_cols, ticker, horizon):
         if end <= start:
             continue
         model = build_model(X_all.shape[1], X_all.shape[2])
-        train_model(model, X_all[:start], y_all[:start])
+        train_model(model, X_all[:start], y_all[:start], epochs=WALKFORWARD_EPOCHS, verbose=0)
         p = model.predict(X_all[start:end], verbose=0).flatten()
         preds.extend(p.tolist())
         actual.extend(y_all[start:end].flatten().tolist())
@@ -384,7 +384,7 @@ def main():
             build_comparison_table(all_results, output_suffix=suf)
             shock_df = build_shock_window_table(all_results, SHOCK_WINDOWS, output_suffix=suf)
             build_regime_table(all_results, output_suffix=suf)
-            build_dm_table(all_results, output_suffix=suf)
+            build_dm_table(all_results, forecast_horizon=horizon, output_suffix=suf)
             build_backtest_table(all_results, TRANSACTION_COST_BPS, output_suffix=suf)
 
             # Plots (per-asset files)

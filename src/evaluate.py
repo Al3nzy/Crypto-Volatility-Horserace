@@ -163,10 +163,11 @@ def run_diebold_mariano(e1: np.ndarray, e2: np.ndarray, h: int = 1) -> dict:
     return {"dm_stat": float(dm_stat), "p_value": float(p_value), "significant": p_value < 0.05}
 
 
-def build_dm_table(results: dict, output_suffix: str = "") -> pd.DataFrame:
+def build_dm_table(results: dict, forecast_horizon: int = 1, output_suffix: str = "") -> pd.DataFrame:
     """
     Pairwise Diebold-Mariano tests (squared errors) for all model pairs.
     Negative DM stat means model1 is better; positive means model2 is better.
+    forecast_horizon: number of steps ahead (sets Newey-West HAC lag truncation).
     """
     names = list(results.keys())
     pairs = []
@@ -178,7 +179,7 @@ def build_dm_table(results: dict, output_suffix: str = "") -> pd.DataFrame:
             n = min(len(a1), len(p1), len(p2))
             e1 = (a1[:n] - p1[:n]) ** 2
             e2 = (a1[:n] - p2[:n]) ** 2
-            dm = run_diebold_mariano(e1, e2)
+            dm = run_diebold_mariano(e1, e2, h=forecast_horizon)
             better = m1 if dm["dm_stat"] < 0 else m2
             pairs.append({
                 "Model_A": m1, "Model_B": m2,
