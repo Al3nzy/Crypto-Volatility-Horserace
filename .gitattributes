@@ -1,0 +1,2 @@
+# Bash must use LF so heredocs work in WSL
+*.sh text eol=lf
