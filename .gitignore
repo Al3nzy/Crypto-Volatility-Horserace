@@ -8,9 +8,9 @@
 qodo/
 
 # ── Large or regenerated project artifacts ──
-/data/
-/models/
-/results/
+# /data/
+# /models/
+# /results/
 
 # ── Papers (PDFs, large exports); remove this block if you want .bib tracked in-repo ──
 /papers/

@@ -1,0 +1,13 @@
+pillar,asset,source_type,is_real,row_count,expected_rows,coverage_ratio,missing_rate,optional_missing_rate,constant_feature_count,constant_features,optional_constant_feature_count,optional_constant_features,source_components,errors,passes_preflight
+market,BTC-USD,api_yfinance,True,1812,1812,1.0,0.0,0.0,0,,0,,yfinance,{},True
+market,ETH-USD,api_yfinance,True,1812,1812,1.0,0.0,0.0,0,,0,,yfinance,{},True
+market,DOGE-USD,api_yfinance,True,1812,1812,1.0,0.0,0.0,0,,0,,yfinance,{},True
+market,XRP-USD,api_yfinance,True,1812,1812,1.0,0.0,0.0,0,,0,,yfinance,{},True
+sentiment,BTC-USD,api,True,1827,1812,1.0,0.0,0.0,0,,1,FinBERT_Polarity,fear_greed,"{""cryptopanic"": ""missing_api_key""}",True
+sentiment,ETH-USD,api,True,1827,1812,1.0,0.0,0.0,0,,1,FinBERT_Polarity,fear_greed,"{""cryptopanic"": ""missing_api_key""}",True
+sentiment,DOGE-USD,api,True,1827,1812,1.0,0.0,0.0,0,,1,FinBERT_Polarity,fear_greed,"{""cryptopanic"": ""missing_api_key""}",True
+sentiment,XRP-USD,api,True,1827,1812,1.0,0.0,0.0,0,,1,FinBERT_Polarity,fear_greed,"{""cryptopanic"": ""missing_api_key""}",True
+onchain,BTC-USD,api,True,1827,1812,1.0,0.0,0.6666666666666666,0,,2,Transfer_Volume_USD|Hash_Rate,coinmetrics_community,{},True
+onchain,ETH-USD,api,True,1827,1812,1.0,0.0,0.6666666666666666,0,,2,Transfer_Volume_USD|Hash_Rate,coinmetrics_community,{},True
+onchain,DOGE-USD,api,True,1827,1812,1.0,0.0,0.6666666666666666,0,,2,Transfer_Volume_USD|Hash_Rate,coinmetrics_community,{},True
+onchain,XRP-USD,api,True,1827,1812,1.0,0.0,0.6666666666666666,0,,2,Transfer_Volume_USD|Hash_Rate,coinmetrics_community,{},True

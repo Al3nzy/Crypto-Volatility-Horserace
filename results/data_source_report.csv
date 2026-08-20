@@ -1,0 +1,13 @@
+pillar,asset,source_type,is_real,source_components,errors
+market,BTC-USD,api_yfinance,True,yfinance,{}
+market,ETH-USD,api_yfinance,True,yfinance,{}
+market,DOGE-USD,api_yfinance,True,yfinance,{}
+market,XRP-USD,api_yfinance,True,yfinance,{}
+sentiment,BTC-USD,api,True,fear_greed,"{""cryptopanic"": ""missing_api_key""}"
+sentiment,ETH-USD,api,True,fear_greed,"{""cryptopanic"": ""missing_api_key""}"
+sentiment,DOGE-USD,api,True,fear_greed,"{""cryptopanic"": ""missing_api_key""}"
+sentiment,XRP-USD,api,True,fear_greed,"{""cryptopanic"": ""missing_api_key""}"
+onchain,BTC-USD,api,True,coinmetrics_community,{}
+onchain,ETH-USD,api,True,coinmetrics_community,{}
+onchain,DOGE-USD,api,True,coinmetrics_community,{}
+onchain,XRP-USD,api,True,coinmetrics_community,{}
