@@ -243,7 +243,7 @@ crypto-horserace/
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-username/crypto-horserace.git
+git clone https://github.com/Al3nzy/Crypto-Volatility-Horserace.git
 cd crypto-horserace
 
 # Create and activate virtual environment
