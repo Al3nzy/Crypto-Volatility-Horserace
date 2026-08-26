@@ -233,7 +233,7 @@ Regime slicing (`results/regime_metrics_*.csv`) shows the flagship model actuall
 
 ### 3. What the model actually attends to
 
-<img src="docs/figures/feature_importance_BTC_USD_h1.png" alt="Attention-weighted feature importance" width="700"/>
+<img src="results/feature_importance_BTC_USD_h1.png" alt="Attention-weighted feature importance" width="700"/>
 
 Attention-weighted feature importance confirms the model leans most on `Log_Return`, `Market_FearGreed`, and `Tx_Count`, with the engineered `Volatility` / `RV_Week` / `RV_Month` autoregressive features (added specifically to give the DL model the same lagged-volatility signal ARIMA/HAR-RV rely on) also contributing.
 
