@@ -9,6 +9,13 @@ Executes all four phases sequentially:
 """
 import os
 import sys
+import time
+
+# Must be set before TensorFlow is imported anywhere in the process (see
+# src/model_cnn_lstm.py, which sets the same pair defensively as well).
+os.environ.setdefault("TF_DETERMINISTIC_OPS", "1")
+os.environ.setdefault("TF_CUDNN_DETERMINISTIC", "1")
+
 import numpy as np
 import pandas as pd
 from datetime import datetime
@@ -26,9 +33,12 @@ from config import (
     ACTIVE_DATA_EXPERIMENT,
     ASSET_ONCHAIN_CORE_FEATURE_COLS,
     ASSET_SENTIMENT_FEATURE_COLS,
+    BASELINE_N_JOBS,
     ENABLE_GOOGLE_TRENDS,
     ENABLE_ONCHAIN_API,
+    FAST_DEV_MODE,
     FULL_FEATURES,
+    FULL_FEATURES_NO_RV,
     MARKET_FEATURE_COLS,
     RESULTS_DIR, TRAIN_RATIO,
     SHOCK_WINDOWS, RUN_HISTORY_FILE, RUN_ABLATIONS, RUN_ABLATIONS_FOR_ALL_TICKERS,
@@ -42,7 +52,7 @@ from config import (
     TRANSACTION_COST_BPS, MC_DROPOUT_PASSES, MC_INTERVAL_ALPHA,
     SENSITIVITY_MISSING_RATES, SENSITIVITY_NOISE_STD_RATES,
     REPRO_SEEDS, WALKFORWARD_MIN_TRAIN, WALKFORWARD_STEP, WALKFORWARD_EPOCHS,
-    USE_POOLED_DL_TRAINING, SEED,
+    USE_POOLED_DL_TRAINING, USE_MARKET_API, USE_API, SEED,
 )
 
 # ── Phase 1 imports ──
@@ -55,7 +65,7 @@ from src.baselines import run_all_baselines, get_arima_forecasts_for_residuals
 
 # ── Phase 3 imports ──
 from src.model_cnn_lstm import (
-    build_model, train_model, extract_attention_weights,
+    build_model, train_model, extract_attention_weights, set_global_determinism,
 )
 from src.model_dl_baselines import run_dl_baseline_variant
 from src.horserace_baselines import build_naive_persistence_result, build_svr_result
@@ -78,6 +88,7 @@ ABLATION_FEATURE_SETS = {
     "market_macro": MARKET_FEATURE_COLS + ["Market_FearGreed"],
     "market_onchain": MARKET_FEATURE_COLS + ASSET_ONCHAIN_CORE_FEATURE_COLS,
     "market_sentiment": MARKET_FEATURE_COLS + ASSET_SENTIMENT_FEATURE_COLS,
+    "full_multimodal_no_rv": FULL_FEATURES_NO_RV,
     "full_multimodal": FULL_FEATURES,
 }
 
@@ -88,6 +99,7 @@ def run_dl_experiment(
     primary_ticker: str | None = None,
     forecast_horizon: int = FORECAST_HORIZON,
     pipeline=None,
+    seed: int | None = None,
 ):
     """Train/evaluate one DL experiment for a selected feature subset."""
     if pipeline is None:
@@ -103,7 +115,7 @@ def run_dl_experiment(
     tgt_scaler = pipeline["tgt_scaler"]
     test_dates = pipeline["test_dates"]
 
-    model = build_model(X_train.shape[1], X_train.shape[2])
+    model = build_model(X_train.shape[1], X_train.shape[2], seed=seed)
     history = train_model(model, X_train, y_train, X_test, y_test)
 
     y_pred_scaled = model.predict(X_test, verbose=0)
@@ -199,10 +211,32 @@ def run_walkforward_dl(pipeline, feature_cols, ticker, horizon):
     }
 
 
+def _format_hms(elapsed_sec: float) -> str:
+    hours, rem = divmod(elapsed_sec, 3600)
+    minutes, seconds = divmod(rem, 60)
+    return f"{int(hours):02d}h {int(minutes):02d}m {seconds:05.2f}s"
+
+
 def main():
     print("=" * 60)
     print("  CRYPTO VOLATILITY HORSERACE – MULTIMODAL BENCHMARKING")
     print("=" * 60)
+
+    overall_start = time.time()
+    combo_timings = []  # one row per (ticker, horizon): wall-clock seconds
+
+    # Pin Python/NumPy/TF RNGs together and enable op-level determinism
+    # before anything else runs (see src/model_cnn_lstm.py for details).
+    set_global_determinism(SEED)
+
+    if FAST_DEV_MODE:
+        print(
+            "\n[FAST_DEV_MODE] CRYPTO_HORSERACE_FAST_DEV is set: walk-forward "
+            "re-estimation, the ablation feature-set suite, the "
+            "reproducibility-seed matrix, and cross-asset generalization "
+            "will be SKIPPED. Unset this env var for a full paper-grade run."
+        )
+    print(f"[Config] BASELINE_N_JOBS={BASELINE_N_JOBS} (ARIMA/GARCH/GJR-GARCH refit parallelism)")
 
     # ================================================================
     # PHASE 1 – ETL Pipeline
@@ -211,15 +245,18 @@ def main():
     print("-" * 40)
     print(
         f"[Config] CRYPTO_HORSERACE_DATA_EXPERIMENT={ACTIVE_DATA_EXPERIMENT} | "
-        f"CRYPTO_HORSERACE_POOLED_DL={USE_POOLED_DL_TRAINING}"
+        f"CRYPTO_HORSERACE_POOLED_DL={USE_POOLED_DL_TRAINING} | "
+        f"CRYPTO_HORSERACE_USE_MARKET_API={USE_MARKET_API} | "
+        f"CRYPTO_HORSERACE_USE_API={USE_API}"
     )
 
     # 1a. Collect/build three datatype panels
     collected = collect_feature_datasets(
         tickers=TICKERS,
-        use_api=True,
+        use_api=USE_API,
         use_google_trends=ENABLE_GOOGLE_TRENDS,
         use_onchain_api=ENABLE_ONCHAIN_API,
+        use_market_api=USE_MARKET_API,
     )
     market_df = collected["market_df"]
     sentiment_df = collected["sentiment_df"]
@@ -249,10 +286,12 @@ def main():
     repro_rows = []
 
     for horizon in EXPERIMENT_HORIZONS:
+        horizon_start = time.time()
         print("\n" + "=" * 60)
         print(f"  FORECAST HORIZON: {horizon} day(s)")
         print("=" * 60)
         for ticker in TICKERS:
+            combo_start = time.time()
             suf = f"{ticker_suffix(ticker)}_h{horizon}"
             print("\n" + "=" * 60)
             print(f"  ASSET: {ticker}")
@@ -275,6 +314,7 @@ def main():
                 merged_df,
                 forecast_horizon=horizon,
                 include_har_gjr=RUN_HAR_GJR_BASELINES,
+                n_jobs=BASELINE_N_JOBS,
             )
 
             # Phase 3 – Deep Learning
@@ -315,7 +355,7 @@ def main():
             # Residual hybrid
             vol_series = merged_df["Volatility"]
             arima_full_pred, vol_vals = get_arima_forecasts_for_residuals(
-                vol_series, forecast_horizon=horizon
+                vol_series, forecast_horizon=horizon, n_jobs=BASELINE_N_JOBS
             )
             residuals = vol_vals - arima_full_pred
             residuals = np.nan_to_num(residuals, nan=0.0)
@@ -443,7 +483,7 @@ def main():
                 pd.DataFrame(sens_rows).to_csv(os.path.join(RESULTS_DIR, f"sensitivity_metrics_{suf}.csv"), index=False)
 
             # Optional ablations (only for PRIMARY_TICKER by default to save compute)
-            run_ablations_here = RUN_ABLATIONS and (
+            run_ablations_here = RUN_ABLATIONS and not FAST_DEV_MODE and (
                 RUN_ABLATIONS_FOR_ALL_TICKERS or ticker == PRIMARY_TICKER
             )
             if run_ablations_here:
@@ -486,17 +526,26 @@ def main():
                     print(f"[Ablation] Saved -> {ab_path}")
 
             # Walk-forward DL metrics
-            wf = run_walkforward_dl(pipeline, FULL_FEATURES, ticker, horizon)
-            if wf:
-                walkforward_rows.append(wf)
+            if not FAST_DEV_MODE:
+                wf = run_walkforward_dl(pipeline, FULL_FEATURES, ticker, horizon)
+                if wf:
+                    walkforward_rows.append(wf)
 
             # Reproducibility matrix (subset for compute)
-            if ticker == PRIMARY_TICKER and horizon == FORECAST_HORIZON:
+            if not FAST_DEV_MODE and ticker == PRIMARY_TICKER and horizon == FORECAST_HORIZON:
                 for seed in REPRO_SEEDS:
-                    np.random.seed(seed)
+                    # NOTE: previously this only called np.random.seed(seed).
+                    # Keras/TF weight initialization draws from TF's RNG, not
+                    # NumPy's, so that line never actually varied the model's
+                    # initialization across "seeds" -- the run-to-run spread
+                    # recorded in reproducibility_summary.csv reflected
+                    # uncontrolled non-determinism (see model_cnn_lstm.py),
+                    # not the seed column. seed=seed below actually threads
+                    # the seed into model construction.
                     out_seed = run_dl_experiment(
                         FULL_FEATURES, experiment_name=f"seed_{seed}",
-                        primary_ticker=ticker, forecast_horizon=horizon
+                        primary_ticker=ticker, forecast_horizon=horizon,
+                        seed=seed,
                     )
                     repro_rows.append({
                         "Ticker": ticker, "Horizon": horizon, "Seed": seed,
@@ -505,6 +554,7 @@ def main():
 
             # Run history (one row per ticker)
             run_ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+            combo_elapsed_sec = time.time() - combo_start  # Phase 2-4 + ablations/walk-forward/repro for THIS ticker/horizon
             run_row = {
                 "run_ts_utc": run_ts,
                 "market_interval": MARKET_INTERVAL,
@@ -528,14 +578,28 @@ def main():
                 "residual_hybrid_mae": all_results["Residual Hybrid (ARIMA+DL-resid)"]["mae"],
                 "winner": min(all_results.keys(), key=lambda k: all_results[k]["rmse"]),
                 "shock_rows": int(len(shock_df)) if isinstance(shock_df, pd.DataFrame) else 0,
+                "combo_execution_time_sec": round(combo_elapsed_sec, 2),
+                "cumulative_execution_time_sec": round(time.time() - overall_start, 2),
             }
             append_run_history(run_row, RUN_HISTORY_FILE)
 
             # Cross-asset generalization (per holdout)
-            if horizon == FORECAST_HORIZON:
+            if not FAST_DEV_MODE and horizon == FORECAST_HORIZON:
                 cross_asset_rows.append(
                     run_cross_asset_generalization(FULL_FEATURES, ticker, horizon)
                 )
+
+            combo_total_sec = time.time() - combo_start
+            combo_timings.append({
+                "Ticker": ticker,
+                "Horizon": horizon,
+                "Elapsed_sec": round(combo_total_sec, 2),
+                "Elapsed_hms": _format_hms(combo_total_sec),
+            })
+            print(f"\n[Timing] {ticker} h={horizon} finished in {_format_hms(combo_total_sec)}")
+
+        horizon_elapsed = time.time() - horizon_start
+        print(f"\n[Timing] Horizon {horizon} (all tickers) finished in {_format_hms(horizon_elapsed)}")
 
     if USE_POOLED_DL_TRAINING:
         pooled_rows = []
@@ -585,10 +649,25 @@ def main():
         agg.to_csv(os.path.join(RESULTS_DIR, "reproducibility_summary.csv"), index=False)
 
     # Summary
+    overall_elapsed = time.time() - overall_start
+    timing_df = pd.DataFrame(combo_timings)
+    if not timing_df.empty:
+        timing_path = os.path.join(RESULTS_DIR, "timing_report.csv")
+        timing_df.to_csv(timing_path, index=False)
+        print("\n" + "=" * 60)
+        print("  PER-ASSET / PER-HORIZON TIMING")
+        print("=" * 60)
+        print(timing_df.to_string(index=False))
+        print(f"  Saved -> {timing_path}")
+
     print("\n" + "=" * 60)
     print("  HORSERACE COMPLETE (MULTI-ASSET)")
     print(f"  Results saved to: {RESULTS_DIR}")
     print(f"  Assets: {', '.join(TICKERS)}")
+    print(
+        f"  Total Execution Time : {_format_hms(overall_elapsed)} "
+        f"({overall_elapsed / 60:.2f} mins | {overall_elapsed / 3600:.2f} hrs)"
+    )
     print("=" * 60)
 
     return all_asset_results

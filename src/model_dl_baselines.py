@@ -18,7 +18,7 @@ from config import (
     LSTM_UNITS,
 )
 from src.evaluate import rmse
-from src.model_cnn_lstm import train_model
+from src.model_cnn_lstm import set_global_determinism, train_model
 
 
 def build_cnn_only(window_size: int, num_features: int) -> Model:
@@ -105,6 +105,7 @@ def run_dl_baseline_variant(
     if variant not in builders:
         raise ValueError(f"Unknown variant: {variant}")
 
+    set_global_determinism()  # reseed immediately before construction, same as build_model()
     model = builders[variant](ws, nf)
     train_model(model, X_train, y_train, X_test, y_test)
     pred_s = model.predict(X_test, verbose=0)

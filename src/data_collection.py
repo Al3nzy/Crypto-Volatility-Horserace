@@ -23,14 +23,14 @@ from src.ingest_onchain import load_onchain_data, save_onchain_data
 from src.ingest_sentiment import load_sentiment_data, save_sentiment_data
 
 
-def collect_market_dataset(tickers: list[str] | None = None) -> pd.DataFrame:
+def collect_market_dataset(tickers: list[str] | None = None, use_api: bool = True) -> pd.DataFrame:
     tickers = tickers or TICKERS
     market_frames = []
     for ticker in tickers:
-        df_t = fetch_market_data(ticker=ticker)
+        df_t = fetch_market_data(ticker=ticker, use_api=use_api)
         df_t = df_t.reset_index()
         df_t["Asset"] = ticker
-        if ENABLE_COINMARKETCAP:
+        if use_api and ENABLE_COINMARKETCAP:
             cmc_df, cmc_err = fetch_cmc_daily_ohlcv(ticker)
             if cmc_df is not None and not cmc_df.empty:
                 df_t = df_t.merge(cmc_df, on="Date", how="left")
@@ -77,9 +77,15 @@ def collect_feature_datasets(
     request_timeout: int = 20,
     use_google_trends: bool = ENABLE_GOOGLE_TRENDS,
     use_onchain_api: bool = ENABLE_ONCHAIN_API,
+    use_market_api: bool | None = None,
 ) -> dict:
     tickers = tickers or TICKERS
-    market_df = collect_market_dataset(tickers=tickers)
+    # use_market_api lets Pillar 1 be toggled independently of the
+    # sentiment/on-chain use_api switch; defaults to use_api when not given
+    # explicitly, so existing callers keep their current behaviour.
+    market_df = collect_market_dataset(
+        tickers=tickers, use_api=use_api if use_market_api is None else use_market_api
+    )
 
     sentiment_df, sentiment_meta = load_sentiment_data(
         tickers=tickers,

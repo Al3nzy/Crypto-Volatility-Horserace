@@ -18,14 +18,25 @@ from config import (
 from src.collection_utils import normalize_dates
 
 
-def fetch_market_data(ticker: str | None = None) -> pd.DataFrame:
-    """Download OHLCV from Yahoo Finance or fallback to cached local CSV."""
+def fetch_market_data(ticker: str | None = None, use_api: bool = True) -> pd.DataFrame:
+    """
+    Download OHLCV from Yahoo Finance, or read from the local cache directly
+    when use_api=False (or when the download fails/returns empty). Since
+    START_DATE/END_DATE are fixed historical dates, a cached local CSV
+    covering the same range is identical to a fresh download, so skipping
+    the network call on repeat runs changes nothing about the resulting
+    data -- only how long Phase 1 takes.
+    """
     ticker = ticker or PRIMARY_TICKER
     df = None
 
     intraday_aliases = {"1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h"}
+    if not use_api:
+        print(f"[Pillar 1] use_api=False for {ticker}; using local cache …")
     try:
-        if MARKET_INTERVAL in intraday_aliases:
+        if not use_api:
+            pass
+        elif MARKET_INTERVAL in intraday_aliases:
             print(
                 f"[Pillar 1] Downloading {ticker} interval={MARKET_INTERVAL} "
                 f"period={INTRADAY_PERIOD} …"

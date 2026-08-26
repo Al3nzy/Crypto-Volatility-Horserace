@@ -2,6 +2,7 @@
 Global configuration for the Crypto Volatility Horserace project.
 """
 import os
+import multiprocessing as _mp
 
 # ──────────────────────────────────────────────────────────────
 # Paths
@@ -211,11 +212,30 @@ ASSET_ONCHAIN_OPTIONAL_FEATURE_COLS = [
     "Hash_Rate",
     "Network_Cap_USD",
 ]
-FULL_FEATURES = (
+FULL_FEATURES_NO_RV = (
     MARKET_FEATURE_COLS
     + ASSET_SENTIMENT_FEATURE_COLS
     + ASSET_ONCHAIN_CORE_FEATURE_COLS
 )
+
+# HAR-style trailing realized-volatility features. ARIMA/GARCH/HAR-RV all
+# forecast future volatility primarily from *past observed volatility*
+# (that's what makes HAR-RV a same-day OLS on RV_d/RV_w/RV_m, and why ARIMA
+# fits the raw Volatility series directly) -- crypto realized volatility is
+# strongly persistent (volatility clustering), so lagged RV is typically the
+# single most informative predictor of near-term RV. FULL_FEATURES_NO_RV
+# above never gave the DL model that same signal; it had to infer volatility
+# indirectly from OHLCV/returns/macro/on-chain features only. Concretely,
+# in a real run this showed up as the DL model overshooting hard in the
+# 2024 "calm" regime (regime-split RMSE ~0.029 vs ARIMA/HAR-RV's ~0.0023) --
+# it had no way to anchor to the fact that realized vol had genuinely
+# dropped, the way ARIMA/HAR-RV do automatically via their own lagged input.
+# RV_Week/RV_Month are computed in src/fuse_data.py with the exact same
+# trailing window alignment as src/baselines.py's run_har_rv(), so adding
+# them is leakage-free by construction: RV_Week[t0] only uses Volatility up
+# to and including t0, matching create_windows()'s own window boundary.
+RV_FEATURE_COLS = ["Volatility", "RV_Week", "RV_Month"]
+FULL_FEATURES = FULL_FEATURES_NO_RV + RV_FEATURE_COLS
 EXTENDED_FEATURES = (
     MARKET_FEATURE_COLS
     + ASSET_SENTIMENT_FEATURE_COLS
@@ -338,3 +358,41 @@ try:
 except ValueError:
     SVR_GAMMA = _svr_g
 SVR_EPSILON = float(os.environ.get("SVR_EPSILON", "0.01"))
+
+# ──────────────────────────────────────────────────────────────
+# Performance controls
+# ──────────────────────────────────────────────────────────────
+# Worker processes for the per-day ARIMA/GARCH/GJR-GARCH rolling refits
+# (src/baselines.py). Each day's refit is independent of every other day's,
+# so running them across cores changes only wall-clock time, never the
+# numbers. n_jobs=1 reproduces the original strictly-sequential behaviour.
+BASELINE_N_JOBS = int(
+    os.environ.get("CRYPTO_HORSERACE_BASELINE_JOBS", str(max(1, (_mp.cpu_count() or 2) - 1)))
+)
+
+# When True, skip the most compute-heavy *optional* robustness analyses
+# (walk-forward re-estimation, the 7-way ablation feature-set suite, the
+# multi-seed reproducibility matrix, and cross-asset generalization) so a
+# debugging run finishes in minutes instead of hours. These analyses still
+# run in full whenever this is False (the default), so the paper-grade
+# results are unaffected unless this is explicitly turned on.
+FAST_DEV_MODE = os.environ.get("CRYPTO_HORSERACE_FAST_DEV", "").lower() in ("1", "true", "yes")
+
+# When False, Pillar 1 (market OHLCV) skips the yfinance network call and
+# reads directly from the local cache in data/raw or data/features, mirroring
+# the use_api switch already used for the sentiment/on-chain pillars. Useful
+# for fast repeat runs once the historical window has already been fetched
+# once (START_DATE/END_DATE are fixed historical dates, so the data will not
+# change between runs).
+USE_MARKET_API = os.environ.get("CRYPTO_HORSERACE_USE_MARKET_API", "1").lower() not in (
+    "0",
+    "false",
+    "no",
+)
+
+# Same idea as USE_MARKET_API but for Pillars 2/3 (sentiment, on-chain).
+# main.py wires this into collect_feature_datasets(use_api=...); when False,
+# load_sentiment_data()/load_onchain_data() reuse each pillar's own
+# previously-saved feature CSV (data/features/.../*.csv) instead of hitting
+# CryptoPanic/Google Trends/Fear&Greed/CoinMetrics again.
+USE_API = os.environ.get("CRYPTO_HORSERACE_USE_API", "1").lower() not in ("0", "false", "no")

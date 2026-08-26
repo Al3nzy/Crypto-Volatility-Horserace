@@ -3,15 +3,29 @@ Statistical Baseline Module (Section 3.2) – ARIMA & GARCH(1,1).
 
 Both models operate on the **univariate volatility series** from the merged
 dataset so the comparison against the multimodal DL model is fair.
+
+PERFORMANCE NOTE
+-----------------
+All four rolling-refit routines below (`run_arima`, `run_garch`,
+`run_gjr_garch`, `get_arima_forecasts_for_residuals`) refit a fresh
+statistical model at every single step of a rolling-origin forecast. Each
+step's fit only depends on history up to that point, not on any other
+step's result, so the steps are embarrassingly parallel: running them
+concurrently across CPU cores changes only wall-clock time, never the
+numbers. `n_jobs` controls how many worker processes joblib uses
+(`n_jobs=1` reproduces the original strictly-sequential behaviour;
+`n_jobs=-1` uses all available cores). This is wired to
+`config.BASELINE_N_JOBS` by default.
 """
 import warnings
 import numpy as np
 import pandas as pd
+from joblib import Parallel, delayed
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 from statsmodels.tsa.arima.model import ARIMA
 from arch import arch_model
 
-from config import LOOKBACK_WINDOW, TRAIN_RATIO
+from config import BASELINE_N_JOBS, LOOKBACK_WINDOW, TRAIN_RATIO
 
 warnings.filterwarnings("ignore")
 
@@ -23,10 +37,48 @@ def _rmse(y_true, y_pred):
     return np.sqrt(mean_squared_error(y_true, y_pred))
 
 
+def _arima_step(vals: np.ndarray, t0: int, forecast_horizon: int, order):
+    """
+    Fit ARIMA(order) on vals[:t0+1] and forecast `forecast_horizon` steps
+    ahead. Falls back to last-observed-value persistence on any fit failure
+    (identical fallback semantics to the original sequential implementation).
+    """
+    history = vals[: t0 + 1]
+    try:
+        model = ARIMA(history, order=order)
+        fitted = model.fit()
+        fc = fitted.forecast(steps=forecast_horizon)
+        yhat = float(fc[-1]) if hasattr(fc, "__len__") else float(fc)
+    except Exception:
+        yhat = float(history[-1])
+    return yhat
+
+
+def _garch_step(scaled_ret: pd.Series, t0: int, forecast_horizon: int, asymmetric: bool):
+    """
+    Fit GARCH(1,1) (or GJR-GARCH when asymmetric=True) on scaled_ret up to
+    and including t0, forecast forecast_horizon steps ahead. Same fallback
+    semantics as the original sequential implementation.
+    """
+    train_window = scaled_ret.iloc[: t0 + 1]
+    try:
+        kwargs = dict(vol="Garch", p=1, q=1, mean="Constant", dist="Normal")
+        if asymmetric:
+            kwargs["o"] = 1
+        am = arch_model(train_window, **kwargs)
+        res = am.fit(disp="off", show_warning=False)
+        forecast = res.forecast(horizon=forecast_horizon)
+        var_h = forecast.variance.values[-1, forecast_horizon - 1]
+        sigma = np.sqrt(var_h) / 100.0
+    except Exception:
+        sigma = train_window.iloc[-14:].std() / 100.0
+    return sigma
+
+
 # ──────────────────────────────────────────────────────────────
 # ARIMA baseline
 # ──────────────────────────────────────────────────────────────
-def run_arima(vol_series: pd.Series, forecast_horizon: int = 1, order=(5, 1, 0)):
+def run_arima(vol_series: pd.Series, forecast_horizon: int = 1, order=(5, 1, 0), n_jobs: int = 1):
     """
     Rolling h-step-ahead ARIMA forecast on the window-aligned test portion.
     """
@@ -37,30 +89,20 @@ def run_arima(vol_series: pd.Series, forecast_horizon: int = 1, order=(5, 1, 0))
         print("[ARIMA] Not enough rows for windowed forecasting.")
         return None
     split_idx = int(n_windows * TRAIN_RATIO)
-
-    predictions = []
-    actuals = []
-    test_dates = []
     idx = vol_series.index
 
-    print(f"[ARIMA] Forecasting {n_windows - split_idx} steps (h={forecast_horizon}) …")
-    for k in range(split_idx, n_windows):
-        t0 = k + LOOKBACK_WINDOW - 1
-        target_idx = t0 + forecast_horizon
-        history = list(vals[: t0 + 1])
-        try:
-            model = ARIMA(history, order=order)
-            fitted = model.fit()
-            fc = fitted.forecast(steps=forecast_horizon)
-            yhat = float(fc[-1]) if hasattr(fc, "__len__") else float(fc)
-        except Exception:
-            yhat = history[-1]  # fallback: persist last value
-        predictions.append(yhat)
-        actuals.append(vals[target_idx])
-        test_dates.append(idx[target_idx])
+    ks = list(range(split_idx, n_windows))
+    t0s = [k + LOOKBACK_WINDOW - 1 for k in ks]
+    target_idxs = [t0 + forecast_horizon for t0 in t0s]
 
+    print(f"[ARIMA] Forecasting {len(ks)} steps (h={forecast_horizon}) using n_jobs={n_jobs} …")
+    predictions = Parallel(n_jobs=n_jobs)(
+        delayed(_arima_step)(vals, t0, forecast_horizon, order) for t0 in t0s
+    )
     predictions = np.array(predictions)
-    actuals = np.array(actuals)
+    actuals = vals[target_idxs]
+    test_dates = idx[target_idxs]
+
     rmse_val = _rmse(actuals, predictions)
     mae_val = mean_absolute_error(actuals, predictions)
     print(f"[ARIMA] RMSE={rmse_val:.6f}  MAE={mae_val:.6f}")
@@ -77,44 +119,31 @@ def run_arima(vol_series: pd.Series, forecast_horizon: int = 1, order=(5, 1, 0))
 # ──────────────────────────────────────────────────────────────
 # GARCH(1,1) baseline
 # ──────────────────────────────────────────────────────────────
-def run_garch(returns_series: pd.Series, vol_series: pd.Series, forecast_horizon: int = 1):
+def run_garch(returns_series: pd.Series, vol_series: pd.Series, forecast_horizon: int = 1, n_jobs: int = 1):
     """
     Rolling h-step-ahead GARCH(1,1) conditional volatility forecast.
     Input: log-return series and actual realized volatility series.
     The model predicts conditional variance at step h -> sqrt for sigma.
     """
-    ret_vals = returns_series.values
     vol_vals = vol_series.values
-    n = len(ret_vals)
+    n = len(returns_series)
     n_windows = n - LOOKBACK_WINDOW - forecast_horizon + 1
     split_idx = int(n_windows * TRAIN_RATIO)
     scaled_ret = returns_series * 100
-
-    predictions = []
-    actuals = []
-    test_dates = []
     idx = vol_series.index
 
-    print(f"[GARCH] Forecasting {n_windows - split_idx} steps (h={forecast_horizon}) …")
-    for k in range(split_idx, n_windows):
-        t0 = k + LOOKBACK_WINDOW - 1
-        target_idx = t0 + forecast_horizon
-        train_window = scaled_ret.iloc[: t0 + 1]
-        try:
-            am = arch_model(train_window, vol="Garch", p=1, q=1,
-                            mean="Constant", dist="Normal")
-            res = am.fit(disp="off", show_warning=False)
-            forecast = res.forecast(horizon=forecast_horizon)
-            var_h = forecast.variance.values[-1, forecast_horizon - 1]
-            sigma = np.sqrt(var_h) / 100.0
-        except Exception:
-            sigma = train_window.iloc[-14:].std() / 100.0
-        predictions.append(sigma)
-        actuals.append(vol_vals[target_idx])
-        test_dates.append(idx[target_idx])
+    ks = list(range(split_idx, n_windows))
+    t0s = [k + LOOKBACK_WINDOW - 1 for k in ks]
+    target_idxs = [t0 + forecast_horizon for t0 in t0s]
 
+    print(f"[GARCH] Forecasting {len(ks)} steps (h={forecast_horizon}) using n_jobs={n_jobs} …")
+    predictions = Parallel(n_jobs=n_jobs)(
+        delayed(_garch_step)(scaled_ret, t0, forecast_horizon, False) for t0 in t0s
+    )
     predictions = np.array(predictions)
-    actuals = np.array(actuals)
+    actuals = vol_vals[target_idxs]
+    test_dates = idx[target_idxs]
+
     rmse_val = _rmse(actuals, predictions)
     mae_val = mean_absolute_error(actuals, predictions)
     print(f"[GARCH] RMSE={rmse_val:.6f}  MAE={mae_val:.6f}")
@@ -131,49 +160,29 @@ def run_garch(returns_series: pd.Series, vol_series: pd.Series, forecast_horizon
 # ──────────────────────────────────────────────────────────────
 # GJR-GARCH(1,1,1) – asymmetric volatility (leverage) term
 # ──────────────────────────────────────────────────────────────
-def run_gjr_garch(returns_series: pd.Series, vol_series: pd.Series, forecast_horizon: int = 1):
+def run_gjr_garch(returns_series: pd.Series, vol_series: pd.Series, forecast_horizon: int = 1, n_jobs: int = 1):
     """
     Rolling h-step-ahead GJR-GARCH conditional volatility (arch: GARCH + o=1).
     """
-    ret_vals = returns_series.values
     vol_vals = vol_series.values
-    n = len(ret_vals)
+    n = len(returns_series)
     n_windows = n - LOOKBACK_WINDOW - forecast_horizon + 1
     split_idx = int(n_windows * TRAIN_RATIO)
     scaled_ret = returns_series * 100
-
-    predictions = []
-    actuals = []
-    test_dates = []
     idx = vol_series.index
 
-    print(f"[GJR-GARCH] Forecasting {n_windows - split_idx} steps (h={forecast_horizon}) …")
-    for k in range(split_idx, n_windows):
-        t0 = k + LOOKBACK_WINDOW - 1
-        target_idx = t0 + forecast_horizon
-        train_window = scaled_ret.iloc[: t0 + 1]
-        try:
-            am = arch_model(
-                train_window,
-                vol="Garch",
-                p=1,
-                o=1,
-                q=1,
-                mean="Constant",
-                dist="Normal",
-            )
-            res = am.fit(disp="off", show_warning=False)
-            forecast = res.forecast(horizon=forecast_horizon)
-            var_h = forecast.variance.values[-1, forecast_horizon - 1]
-            sigma = np.sqrt(var_h) / 100.0
-        except Exception:
-            sigma = train_window.iloc[-14:].std() / 100.0
-        predictions.append(sigma)
-        actuals.append(vol_vals[target_idx])
-        test_dates.append(idx[target_idx])
+    ks = list(range(split_idx, n_windows))
+    t0s = [k + LOOKBACK_WINDOW - 1 for k in ks]
+    target_idxs = [t0 + forecast_horizon for t0 in t0s]
 
+    print(f"[GJR-GARCH] Forecasting {len(ks)} steps (h={forecast_horizon}) using n_jobs={n_jobs} …")
+    predictions = Parallel(n_jobs=n_jobs)(
+        delayed(_garch_step)(scaled_ret, t0, forecast_horizon, True) for t0 in t0s
+    )
     predictions = np.array(predictions)
-    actuals = np.array(actuals)
+    actuals = vol_vals[target_idxs]
+    test_dates = idx[target_idxs]
+
     rmse_val = _rmse(actuals, predictions)
     mae_val = mean_absolute_error(actuals, predictions)
     print(f"[GJR-GARCH] RMSE={rmse_val:.6f}  MAE={mae_val:.6f}")
@@ -247,12 +256,23 @@ def run_har_rv(merged_df: pd.DataFrame, forecast_horizon: int = 1):
 # ──────────────────────────────────────────────────────────────
 # ARIMA forecasts for residual hybrid (aligned with pipeline windows)
 # ──────────────────────────────────────────────────────────────
-def get_arima_forecasts_for_residuals(vol_series: pd.Series, forecast_horizon: int = 1, order=(5, 1, 0), min_history=20):
+def get_arima_forecasts_for_residuals(
+    vol_series: pd.Series,
+    forecast_horizon: int = 1,
+    order=(5, 1, 0),
+    min_history=20,
+    n_jobs: int = 1,
+):
     """
     Rolling h-step-ahead ARIMA forecasts for the series (except warmup).
     Used to compute residuals for the residual hybrid (ARIMA + DL-on-residuals).
     Returns (arima_pred, actual) arrays of length len(vol_series).
     preds[t] = h-step forecast for vol at t, using data up to t - forecast_horizon.
+
+    This refits ARIMA at (almost) every index in the series, which is by far
+    the single most expensive routine in the whole baseline suite (it is not
+    restricted to the test split). It is parallelized across n_jobs workers;
+    with n_jobs=1 it reproduces the original sequential results exactly.
     """
     vals = vol_series.values
     n = len(vals)
@@ -260,15 +280,18 @@ def get_arima_forecasts_for_residuals(vol_series: pd.Series, forecast_horizon: i
     warmup = min_history + forecast_horizon
     preds[:warmup] = np.mean(vals[:min_history])  # warmup fallback
 
-    for t in range(warmup, n):
-        origin = t - forecast_horizon
-        try:
-            model = ARIMA(vals[: origin + 1], order=order)
-            fitted = model.fit()
-            fc = fitted.forecast(steps=forecast_horizon)
-            preds[t] = float(fc[-1]) if hasattr(fc, "__len__") else float(fc)
-        except Exception:
-            preds[t] = vals[origin]
+    t_list = list(range(warmup, n))
+    origins = [t - forecast_horizon for t in t_list]
+
+    print(
+        f"[ARIMA-Residual] Forecasting {len(t_list)} steps (h={forecast_horizon}) "
+        f"using n_jobs={n_jobs} …"
+    )
+    results = Parallel(n_jobs=n_jobs)(
+        delayed(_arima_step)(vals, origin, forecast_horizon, order) for origin in origins
+    )
+    for t, val in zip(t_list, results):
+        preds[t] = val
 
     return preds, vals
 
@@ -280,6 +303,7 @@ def run_all_baselines(
     merged_df: pd.DataFrame,
     forecast_horizon: int = 1,
     include_har_gjr: bool = True,
+    n_jobs: int = BASELINE_N_JOBS,
 ):
     """
     Run ARIMA, GARCH(1,1), and optionally HAR-RV + GJR-GARCH on merged panel for given horizon.
@@ -287,8 +311,8 @@ def run_all_baselines(
     vol_series = merged_df["Volatility"]
     ret_series = merged_df["Log_Return"]
 
-    arima_res = run_arima(vol_series, forecast_horizon=forecast_horizon)
-    garch_res = run_garch(ret_series, vol_series, forecast_horizon=forecast_horizon)
+    arima_res = run_arima(vol_series, forecast_horizon=forecast_horizon, n_jobs=n_jobs)
+    garch_res = run_garch(ret_series, vol_series, forecast_horizon=forecast_horizon, n_jobs=n_jobs)
 
     out = {}
     if arima_res is not None:
@@ -301,7 +325,7 @@ def run_all_baselines(
         if har_res is not None:
             out["HAR-RV"] = har_res
 
-        gjr_res = run_gjr_garch(ret_series, vol_series, forecast_horizon=forecast_horizon)
+        gjr_res = run_gjr_garch(ret_series, vol_series, forecast_horizon=forecast_horizon, n_jobs=n_jobs)
         if gjr_res is not None:
             out["GJR-GARCH"] = gjr_res
 

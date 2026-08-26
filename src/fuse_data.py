@@ -42,24 +42,54 @@ def _prepare_asset_panel(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
 
 
 def _effective_feature_cols(merged: pd.DataFrame, requested: list[str]) -> list[str]:
-    """Drop requested columns that are missing or entirely NaN (e.g. failed vendor fetch)."""
+    """
+    Drop requested columns that are missing, entirely NaN (e.g. a failed
+    vendor fetch), or constant (e.g. FinBERT_Polarity sitting at its 0.0
+    placeholder because ENABLE_FINBERT_ON_INGEST is off and no text corpus
+    was supplied, or Market_FearGreed falling back to a fixed value when the
+    Fear&Greed API is unreachable). A constant column carries no information
+    for the model but still occupies an input channel and gets pushed
+    through MinMaxScaler, so it's dropped the same way an all-NaN column
+    already was.
+    """
     out = []
     for c in requested:
         if c not in merged.columns:
             continue
-        if merged[c].notna().any():
-            out.append(c)
-        else:
+        col = merged[c]
+        if col.notna().sum() == 0:
             print(f"[Fusion] Omitting all-NaN feature column: {c}")
+            continue
+        if col.dropna().nunique() <= 1:
+            print(f"[Fusion] Omitting constant feature column (no information): {c}")
+            continue
+        out.append(c)
     return out
 
 
-def fuse_pillars(primary_ticker: str | None = None) -> pd.DataFrame:
+# In-memory cache of the fused per-ticker panel. fuse_pillars() joins the
+# three pillar CSVs and does not depend on feature_cols, forecast_horizon, or
+# residual_target (those are applied downstream in run_fusion_pipeline), so
+# for a given ticker its output is identical every time it's called within
+# the same process. Phase 1 collection writes the pillar CSVs once at the
+# start of main() before any fuse_pillars() call, so caching for the
+# lifetime of the process is safe. This avoids re-reading, re-merging, and
+# re-writing the same panel dozens of times across horizons, ablation
+# feature sets, and cross-asset generalization.
+_FUSE_CACHE: dict[str, pd.DataFrame] = {}
+_WRITTEN_MERGED: set[str] = set()
+
+
+def fuse_pillars(primary_ticker: str | None = None, use_cache: bool = True) -> pd.DataFrame:
     """
     Join market, asset-specific sentiment, and asset-specific on-chain features.
     The merge key is (Date, Asset).
     """
     ticker = primary_ticker if primary_ticker is not None else PRIMARY_TICKER
+
+    if use_cache and ticker in _FUSE_CACHE:
+        return _FUSE_CACHE[ticker].copy()
+
     market = _prepare_asset_panel(_load_panel(FEATURE_MARKET_FILE), ticker)
     sentiment = _prepare_asset_panel(_load_panel(FEATURE_SENTIMENT_FILE), ticker)
     onchain = _prepare_asset_panel(_load_panel(FEATURE_ONCHAIN_FILE), ticker)
@@ -74,11 +104,28 @@ def fuse_pillars(primary_ticker: str | None = None) -> pd.DataFrame:
     numeric_cols = merged.select_dtypes(include=[np.number]).columns.tolist()
     merged[numeric_cols] = merged.groupby("Asset")[numeric_cols].ffill().bfill()
 
+    # HAR-style trailing realized-volatility features (see RV_FEATURE_COLS
+    # in config.py for the full rationale). Computed per-asset with a
+    # trailing window ending at the same row t0 the model conditions on,
+    # exactly mirroring src/baselines.py's run_har_rv(): RV_Week[t0] and
+    # RV_Month[t0] only use Volatility up to and including t0, so this
+    # carries no look-ahead relative to create_windows()'s window boundary.
+    if "Volatility" in merged.columns:
+        merged["RV_Week"] = merged.groupby("Asset")["Volatility"].transform(
+            lambda s: s.rolling(5, min_periods=1).mean()
+        )
+        merged["RV_Month"] = merged.groupby("Asset")["Volatility"].transform(
+            lambda s: s.rolling(22, min_periods=1).mean()
+        )
+
     required_cols = [c for c in FULL_FEATURES + ["Volatility"] if c in merged.columns]
     merged.dropna(subset=required_cols, inplace=True)
     merged.set_index("Date", inplace=True)
 
     print(f"[Fusion] {ticker} merged shape: {merged.shape}")
+    if use_cache:
+        _FUSE_CACHE[ticker] = merged
+        return merged.copy()
     return merged
 
 
@@ -157,11 +204,15 @@ def run_fusion_pipeline(
     """
     merged = fuse_pillars(primary_ticker=primary_ticker)
 
-    # Save merged CSV for reference
+    # Save merged CSV for reference (only once per ticker per process; the
+    # fused panel doesn't change across horizons/feature-set calls, so
+    # rewriting it dozens of times per run was pure redundant I/O).
     suffix = ticker_suffix(primary_ticker or PRIMARY_TICKER)
     merged_path = os.path.join(DATA_PROCESSED_DIR, f"merged_dataset_{suffix}.csv")
-    merged.to_csv(merged_path)
-    print(f"[Fusion] Saved merged dataset -> {merged_path}")
+    if suffix not in _WRITTEN_MERGED:
+        merged.to_csv(merged_path)
+        print(f"[Fusion] Saved merged dataset -> {merged_path}")
+        _WRITTEN_MERGED.add(suffix)
 
     # Build windows from raw values first, split by time, then scale using
     # train-only fit to avoid look-ahead bias.

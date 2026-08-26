@@ -4,7 +4,36 @@ Multimodal Deep Learning Module (Section 3.3).
 CNN-LSTM with Multi-Head Attention for cryptocurrency volatility forecasting.
 Architecture:
     Input → 1D-CNN → Bi-LSTM → Multi-Head Attention → Dense → Output
+
+REPRODUCIBILITY NOTE
+---------------------
+The original module only called `tf.random.set_seed(SEED)` once, at import
+time. That does not make repeated runs of the full pipeline reproducible:
+- Only TensorFlow's RNG was seeded; Python's `random` and NumPy's global RNG
+  were not, so anything in the pipeline that draws from them (including
+  Keras' own array-shuffling path for model.fit) could differ run to run.
+- GPU execution (cuDNN conv/LSTM kernels) is non-deterministic by default
+  regardless of any seed unless op-level determinism is explicitly enabled.
+- Because build_model()/train_model() are called ~100-250 times over a full
+  run (main model, residual hybrid, DL ablations, walk-forward windows,
+  cross-asset generalization), each call draws from wherever the global RNG
+  stream happened to be left by everything that ran before it, so the exact
+  same nominal SEED could produce different initial weights on different
+  runs, or on the same run's different tickers/horizons.
+`set_global_determinism()` fixes this by seeding Python/NumPy/TF together
+and enabling op-level determinism, and `build_model()` now calls it again
+right before building each model so every model's initial weights are
+pinned to a known seed regardless of what ran earlier in the process. Pass
+a different `seed` to `build_model()` (as the REPRO_SEEDS sweep in main.py
+does) to deliberately vary it.
 """
+import os
+import random
+
+# Must be set before TensorFlow is imported to take effect.
+os.environ.setdefault("TF_DETERMINISTIC_OPS", "1")
+os.environ.setdefault("TF_CUDNN_DETERMINISTIC", "1")
+
 import numpy as np
 import tensorflow as tf
 from tensorflow import keras
@@ -17,7 +46,25 @@ from config import (
     BATCH_SIZE, EPOCHS, PATIENCE, VALIDATION_SPLIT, SEED,
 )
 
-tf.random.set_seed(SEED)
+
+def set_global_determinism(seed: int = SEED) -> None:
+    """Seed Python/NumPy/TensorFlow together and enable op-level determinism."""
+    random.seed(seed)
+    np.random.seed(seed)
+    tf.random.set_seed(seed)
+    try:
+        keras.utils.set_random_seed(seed)
+    except Exception:
+        pass
+    try:
+        tf.config.experimental.enable_op_determinism()
+    except Exception:
+        # Older TF versions (<2.8) don't expose this; TF_DETERMINISTIC_OPS
+        # above still covers most conv/LSTM kernels on those versions.
+        pass
+
+
+set_global_determinism(SEED)
 
 
 # ──────────────────────────────────────────────────────────────
@@ -52,11 +99,18 @@ class AttentionWithWeights(layers.Layer):
 # ──────────────────────────────────────────────────────────────
 # Model builder
 # ──────────────────────────────────────────────────────────────
-def build_model(window_size: int, num_features: int) -> Model:
+def build_model(window_size: int, num_features: int, seed: int | None = None) -> Model:
     """
     Build and compile the CNN-BiLSTM-Attention model with L2 regularization.
+    Reseeds Python/NumPy/TF immediately before construction so weight
+    initialization is deterministic and reproducible across runs regardless
+    of how much other random-drawing code ran earlier in the process. Pass
+    `seed` to deliberately build a model with a different initialization
+    (used by the REPRO_SEEDS sweep in main.py); omitted, it uses the global
+    config SEED.
     Returns: keras.Model
     """
+    set_global_determinism(seed if seed is not None else SEED)
     reg = keras.regularizers.l2(L2_REG)
     inp = layers.Input(shape=(window_size, num_features), name="input")
 

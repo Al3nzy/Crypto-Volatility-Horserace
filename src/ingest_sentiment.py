@@ -514,6 +514,34 @@ def load_sentiment_data(
     if raw is not None:
         print("[Pillar 2] Aggregated asset-specific sentiment archives.")
 
+    # When use_api=False, reuse this project's own previously-saved feature
+    # panel (data/features/sentiment/sentiment_features.csv) for any ticker
+    # not already covered by a raw archive, instead of falling through to
+    # synthetic data. START_DATE/END_DATE are fixed historical dates, so a
+    # cache covering the same window carries the same information as a
+    # fresh fetch -- this just skips CryptoPanic/Google Trends/Fear&Greed on
+    # repeat runs.
+    if not use_api and raw_assets != set(tickers) and os.path.isfile(FEATURE_SENTIMENT_FILE):
+        try:
+            cached = pd.read_csv(FEATURE_SENTIMENT_FILE, parse_dates=["Date"])
+            cached["Date"] = normalize_dates(cached["Date"])
+            cached["Asset"] = cached["Asset"].astype(str)
+            cached = cached[cached["Asset"].isin(tickers) & ~cached["Asset"].isin(raw_assets)]
+            # FinBERT_Polarity is re-merged later from FEATURE_SENTIMENT_FINBERT_FILE
+            # via _load_finbert_daily_merge(); keeping it here too would create
+            # colliding "_x"/"_y" columns on that merge.
+            cached = cached.drop(columns=["FinBERT_Polarity"], errors="ignore")
+        except Exception as e:
+            print(f"[Pillar 2] Could not reuse sentiment cache ({e}); continuing.")
+            cached = pd.DataFrame()
+        if not cached.empty:
+            print(
+                f"[Pillar 2] use_api=False: reusing cached sentiment features for "
+                f"{sorted(cached['Asset'].unique())} …"
+            )
+            raw = cached if raw is None else pd.concat([raw, cached], ignore_index=True)
+            raw_assets = set(raw["Asset"].unique())
+
     frames = []
     base_dates = pd.date_range(START_DATE, END_DATE, freq="D")
 

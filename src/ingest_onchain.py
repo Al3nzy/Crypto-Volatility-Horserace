@@ -369,6 +369,28 @@ def load_onchain_data(
         raw = _finalize_onchain_frame(raw)
         raw_assets = set(raw["Asset"].unique())
 
+    # When use_api=False, reuse this project's own previously-saved feature
+    # panel (data/features/onchain/onchain_features.csv) for any ticker not
+    # already covered by a raw archive, instead of falling through to
+    # synthetic data. Same reasoning as the market/sentiment cache reuse:
+    # START_DATE/END_DATE are fixed historical dates, so this only skips the
+    # CoinMetrics/Glassnode calls on repeat runs, it doesn't change the data.
+    if not use_api and raw_assets != set(tickers) and os.path.isfile(FEATURE_ONCHAIN_FILE):
+        try:
+            cached = pd.read_csv(FEATURE_ONCHAIN_FILE, parse_dates=["Date"])
+            cached = _finalize_onchain_frame(cached)
+            cached = cached[cached["Asset"].isin(tickers) & ~cached["Asset"].isin(raw_assets)]
+        except Exception as e:
+            print(f"[Pillar 3] Could not reuse on-chain cache ({e}); continuing.")
+            cached = pd.DataFrame()
+        if not cached.empty:
+            print(
+                f"[Pillar 3] use_api=False: reusing cached on-chain features for "
+                f"{sorted(cached['Asset'].unique())} …"
+            )
+            raw = cached if raw is None else pd.concat([raw, cached], ignore_index=True)
+            raw_assets = set(raw["Asset"].unique())
+
     frames = [raw] if raw is not None else []
 
     if raw is not None:
