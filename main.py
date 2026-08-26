@@ -491,8 +491,19 @@ def main():
                 ablation_rows = []
                 ablation_results_for_shock = {}
                 for ab_name, ab_cols in ABLATION_FEATURE_SETS.items():
-                    # skip feature-set variants with unavailable columns
-                    if not set(ab_cols).issubset(set(feature_cols)):
+                    # Skip a feature-set variant only if its columns are
+                    # genuinely absent from the fused data for this ticker
+                    # (e.g. a pillar's API failed outright). Checking against
+                    # merged_df.columns (not the primary run's feature_cols)
+                    # is deliberate: feature_cols has already been pruned of
+                    # constant/all-NaN columns for the *primary* multimodal
+                    # run, and that pruning shouldn't also hide an ablation
+                    # entry whose own columns are still present in the raw
+                    # data -- run_dl_experiment() re-applies the same
+                    # constant/NaN pruning independently for each entry's own
+                    # ab_cols, via _effective_feature_cols() inside
+                    # run_fusion_pipeline().
+                    if not set(ab_cols).issubset(set(merged_df.columns)):
                         continue
                     out = run_dl_experiment(
                         ab_cols,
