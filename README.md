@@ -29,6 +29,7 @@
 [Data Pillars](#-the-three-data-pillars) •
 [Model Zoo](#-model-zoo--horserace-competitors) •
 [Evaluation Suite](#-evaluation--benchmarking-suite) •
+[Results](#-results) •
 [Quick Start](#-quick-start) •
 [Configuration](#-configuration--experiment-presets) •
 [Citation](#-citation--research-attribution)
@@ -128,9 +129,10 @@ The pipeline aggregates heterogeneous signals across three foundational pillars 
 
 | Pillar | Data Source | Features Extracted | Description |
 | :--- | :--- | :--- | :--- |
-| **📈 Pillar 1: Market** | `yfinance` & CoinMarketCap | `Open`, `High`, `Low`, `Close`, `Volume`, `Log_Return`, `CMC_Close`, `CMC_Volume` | Captures core price action, intraday ranges, liquidity dynamics, and cross-exchange validated close prices. |
-| **🧠 Pillar 2: Sentiment** | Alternative.me & CryptoPanic | `Market_FearGreed`, `FinBERT_Polarity` | Tracks macro crowd sentiment and contextual sentiment polarity scores from financial news headlines via FinBERT. |
-| **⛓️ Pillar 3: On-Chain** | Coin Metrics & Glassnode | `Active_Addresses`, `Tx_Count`, `Transfer_Volume_USD`, `Hash_Rate`, `Network_Cap_USD` | Fundamental network usage, miner security/computational commitment, and settlement volume on the ledger. |
+| **📈 Pillar 1: Market** | `yfinance` & CoinMarketCap (optional) | `Open`, `High`, `Low`, `Close`, `Volume`, `Log_Return`, plus `CMC_Close`/`CMC_Volume` if a CoinMarketCap key is configured | Captures core price action, intraday ranges, and liquidity dynamics. |
+| **🧠 Pillar 2: Sentiment** | Alternative.me, CryptoPanic (optional), FinBERT (optional) | `Market_FearGreed`, `FinBERT_Polarity`, `News_Sentiment`, `Social_Sentiment`, `Attention_Index` | Tracks macro crowd sentiment and, when a CryptoPanic key / text corpus is supplied, contextual polarity from financial news via FinBERT. Columns that reduce to an all-zero placeholder (no key configured) are auto-dropped from the model input — see [Performance & Reproducibility Controls](#-performance--reproducibility-controls). |
+| **⛓️ Pillar 3: On-Chain** | Coin Metrics & Glassnode (optional) | `Active_Addresses`, `Tx_Count`, `Transfer_Volume_USD`, `Hash_Rate`, `Network_Cap_USD` | Fundamental network usage, miner security/computational commitment, and settlement volume on the ledger. |
+| **🔁 Engineered: Lagged Volatility** | Derived from Pillar 1's own target series | `Volatility`, `RV_Week` (5-day trailing mean), `RV_Month` (22-day trailing mean) | HAR-style autoregressive features computed with the exact same trailing-window alignment as the HAR-RV baseline (`src/baselines.py::run_har_rv`), so they carry no look-ahead. Gives the DL model direct access to the same lagged-realized-volatility signal ARIMA/GARCH/HAR-RV already use as their primary input — see [Results](#-results). |
 
 > 🎯 **Target Variable ($\sigma$):** 14-day rolling realized standard deviation of daily log-returns:
 > $$\sigma_t = \sqrt{\frac{1}{N-1} \sum_{i=0}^{N-1} \left( r_{t-i} - \bar{r}_t \right)^2}$$
@@ -139,7 +141,7 @@ The pipeline aggregates heterogeneous signals across three foundational pillars 
 
 ## 🥊 Model Zoo & Horserace Competitors
 
-The benchmarking harness compares 10 distinct models under identical train/test splits:
+The benchmarking harness compares 12 distinct models under identical train/test splits:
 
 ### 1. Econometric & Statistical Baselines
 * **`ARIMA(5,1,0)`**: Autoregressive Integrated Moving Average on realized volatility series with rolling $h$-step point forecasts.
@@ -194,7 +196,77 @@ results/
 
 ---
 
-## 📁 Repository Structure
+## 📈 Results
+
+The numbers below are from an actual full run of this pipeline (BTC-USD, h=1, `TRAIN_RATIO=0.80`, 2020-01-01 to 2024-12-31, 1,438 train / 360 test windows). They are refreshed periodically as the pipeline evolves, not hand-picked — see `results/comparison_table_*.csv` and `results/regime_metrics_*.csv` for the full multi-asset, multi-horizon output after running `python main.py` yourself. Ranking below is by test RMSE.
+
+### 1. Comparative performance (BTC-USD, h=1)
+
+| Model                             |    RMSE |     MAE | DoC   |      R² |
+|:-----------------------------------|--------:|--------:|:------|--------:|
+| HAR-RV                             | 0.00246 | 0.00146 | 44.0% |   0.913 |
+| ARIMA                              | 0.00248 | 0.00140 | 46.2% |   0.911 |
+| Residual Hybrid (ARIMA+DL-resid)   | 0.00249 | 0.00143 | 46.5% |   0.911 |
+| GRU-only                           | 0.00324 | 0.00244 | 50.4% |   0.848 |
+| LSTM-only                          | 0.00392 | 0.00302 | 47.9% |   0.777 |
+| Hybrid (ARIMA+DL)                  | 0.00404 | 0.00319 | 50.1% |   0.764 |
+| GARCH                              | 0.00604 | 0.00531 | 51.5% |   0.473 |
+| CNN-only                           | 0.00637 | 0.00517 | 49.3% |   0.413 |
+| GJR-GARCH                          | 0.00644 | 0.00563 | 52.6% |   0.401 |
+| **CNN-BiLSTM-Attn (flagship)**     | 0.00730 | 0.00579 | 52.9% |   0.229 |
+| SVR (RBF)                          | 0.01350 | 0.01070 | 53.8% |  -1.6   |
+| Naive Persistence                  | 0.01888 | 0.01745 | 46.5% | -254.3  |
+
+The honest headline finding — consistent with the paper's framing as a question ("quantifying gains beyond persistence baselines"), not a foregone conclusion — is that **HAR-RV, ARIMA, and the ARIMA-residual hybrid remain the strongest point forecasters** on raw RMSE for this asset/horizon. Crypto realized volatility is strongly autocorrelated, so a lagged-volatility-driven model has a structural head start (see feature importance below). The flagship multimodal model clearly beats Naive Persistence and SVR and holds a positive R², but does not yet beat the econometric baselines outright. Per-pair Diebold-Mariano significance is in `results/dm_tests_*.csv`.
+
+### 2. Regime-conditioned RMSE
+
+| Model              |   Bull |   Bear |   Calm | Crisis (LUNA/FTX windows) |
+|:-------------------|-------:|-------:|-------:|---------------------------:|
+| HAR-RV              | 0.0016 | 0.0022 | 0.0024 |                      0.0029 |
+| ARIMA                | 0.0019 | 0.0020 | 0.0023 |                      0.0030 |
+| GARCH                 | 0.0045 | 0.0054 | 0.0079 |                      0.0047 |
+| CNN-BiLSTM-Attn        | 0.0035 | 0.0037 | 0.0093 |                      0.0078 |
+| Naive Persistence      | 0.0158 | 0.0181 | 0.0110 |                      0.0257 |
+
+Regime slicing (`results/regime_metrics_*.csv`) shows the flagship model actually **beats GARCH/GJR-GARCH in trending bull and bear markets**, but loses ground in calm and crisis windows where GARCH's conditional-variance recursion and HAR-RV/ARIMA's direct use of lagged realized volatility dominate. This kind of regime-dependent breakdown, not just a single aggregate RMSE, is the intended use of this benchmark.
+
+### 3. What the model actually attends to
+
+<img src="docs/figures/feature_importance_BTC_USD_h1.png" alt="Attention-weighted feature importance" width="700"/>
+
+Attention-weighted feature importance confirms the model leans most on `Log_Return`, `Market_FearGreed`, and `Tx_Count`, with the engineered `Volatility` / `RV_Week` / `RV_Month` autoregressive features (added specifically to give the DL model the same lagged-volatility signal ARIMA/HAR-RV rely on) also contributing.
+
+### 4. Forecast vs. realized volatility, with crisis windows marked
+
+<img src="docs/figures/predictions_overlay_BTC_USD_h1.png" alt="Predictions overlay with LUNA and FTX crisis windows" width="800"/>
+
+### 5. Temporal attention pattern (FTX crash window)
+
+<img src="docs/figures/attention_heatmap_ftx_crash_BTC_USD_h1.png" alt="Attention heatmap during the FTX crash window" width="800"/>
+
+The model attends overwhelmingly to the two most recent lookback timesteps (`t-13`, `t-12` in a 14-day window) fairly uniformly across features, consistent with the strong short-lag persistence in realized crypto volatility.
+
+> ⚠️ **Reproducibility note:** the econometric baselines (ARIMA/GARCH/GJR-GARCH/HAR-RV) reproduce to the displayed digit on any machine given the same data, since they're deterministic given fixed inputs. The DL model's *initial weights and training trajectory* are seeded and reproducible on the *same* machine/TensorFlow build (see `set_global_determinism()` in `src/model_cnn_lstm.py`), but small numerical differences can still appear across different hardware/TensorFlow versions (CPU vs. GPU, different BLAS/cuDNN builds) — a well-known limitation of floating-point neural network training, not a bug in this pipeline. Re-run `python main.py` on your machine to regenerate all figures/tables in `results/`.
+
+---
+
+## ⚡ Performance & Reproducibility Controls
+
+Recent additions for runtime and reproducibility, all opt-in via environment variables (defaults preserve original behavior):
+
+| Variable | Default | Effect |
+| :--- | :--- | :--- |
+| `CRYPTO_HORSERACE_BASELINE_JOBS` | `cpu_count - 1` | Worker processes for the per-day ARIMA/GARCH/GJR-GARCH rolling refits (`src/baselines.py`). Each day's refit is independent, so this only changes wall-clock time, never the numbers — verified to reproduce identical RMSE at `n_jobs=1` vs parallel. |
+| `CRYPTO_HORSERACE_FAST_DEV` | off | Skips the walk-forward re-estimation, 8-way ablation feature-set suite, multi-seed reproducibility matrix, and cross-asset generalization for fast iteration while debugging. Leave unset for a full paper-grade run. |
+| `CRYPTO_HORSERACE_USE_MARKET_API` | `1` | Set to `0` to skip the yfinance network call and reuse the local market data cache (safe for a fixed historical `START_DATE`/`END_DATE`). |
+| `CRYPTO_HORSERACE_USE_API` | `1` | Same idea for Pillars 2/3 (sentiment, on-chain) — set to `0` to reuse each pillar's previously-saved feature CSV instead of re-hitting CryptoPanic/Google Trends/Fear&Greed/CoinMetrics. |
+
+The pipeline also auto-drops any feature column that is constant (e.g. `FinBERT_Polarity` when `ENABLE_FINBERT_ON_INGEST` is off and no text corpus is supplied) the same way it already dropped all-NaN columns — a constant column is pushed through `MinMaxScaler` for no information gain, so it's logged and excluded rather than silently wasting an input channel.
+
+---
+
+
 
 ```
 crypto-horserace/
@@ -231,6 +303,9 @@ crypto-horserace/
 │   ├── 📂 raw/                      # Unprocessed API responses & CSVs
 │   ├── 📂 features/                 # Cleaned per-pillar feature tables
 │   └── 📂 processed/                # Fully fused multimodal panels
+│
+├── 📂 docs/
+│   └── 📂 figures/                  # Curated result figures embedded in this README
 │
 └── 📂 results/                      # Output figures, tables & benchmark reports
 ```
@@ -318,6 +393,8 @@ All pipeline settings can be modified in [`config.py`](file:///c:/crypto-horsera
 | `LSTM_UNITS` | `32` | Hidden units per direction in BiLSTM. |
 | `NUM_ATTENTION_HEADS`| `4` | Number of parallel self-attention heads. |
 | `DROPOUT_RATE` | `0.40` | Dropout probability for regularization. |
+
+> Runtime/reproducibility environment variables (`CRYPTO_HORSERACE_BASELINE_JOBS`, `CRYPTO_HORSERACE_FAST_DEV`, `CRYPTO_HORSERACE_USE_MARKET_API`, `CRYPTO_HORSERACE_USE_API`) are documented in [Performance & Reproducibility Controls](#-performance--reproducibility-controls) above.
 
 ### Experiment Matrix Presets
 
