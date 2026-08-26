@@ -239,11 +239,11 @@ Attention-weighted feature importance confirms the model leans most on `Log_Retu
 
 ### 4. Forecast vs. realized volatility, with crisis windows marked
 
-<img src="docs/figures/predictions_overlay_BTC_USD_h1.png" alt="Predictions overlay with LUNA and FTX crisis windows" width="800"/>
+<img src="results/predictions_overlay_BTC_USD_h1.png" alt="Predictions overlay with LUNA and FTX crisis windows" width="800"/>
 
 ### 5. Temporal attention pattern (FTX crash window)
 
-<img src="docs/figures/attention_heatmap_ftx_crash_BTC_USD_h1.png" alt="Attention heatmap during the FTX crash window" width="800"/>
+<img src="results/attention_heatmap_ftx_crash_BTC_USD_h1.png" alt="Attention heatmap during the FTX crash window" width="800"/>
 
 The model attends overwhelmingly to the two most recent lookback timesteps (`t-13`, `t-12` in a 14-day window) fairly uniformly across features, consistent with the strong short-lag persistence in realized crypto volatility.
 
