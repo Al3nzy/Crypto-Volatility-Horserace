@@ -515,7 +515,7 @@ def main():
                     ablation_rows.append({
                         "Experiment": ab_name,
                         "Ticker": ticker,
-                        "NumFeatures": len(ab_cols),
+                        "NumFeatures": out["n_features"],  # effective (post-pruning) count actually used by the model
                         "RMSE": r["rmse"],
                         "MAE": r["mae"],
                     })

@@ -247,7 +247,7 @@ Attention-weighted feature importance confirms the model leans most on `Log_Retu
 
 The model attends overwhelmingly to the two most recent lookback timesteps (`t-13`, `t-12` in a 14-day window) fairly uniformly across features, consistent with the strong short-lag persistence in realized crypto volatility.
 
-> ⚠️ **Reproducibility note:** the econometric baselines (ARIMA/GARCH/GJR-GARCH/HAR-RV) reproduce to the displayed digit on any machine given the same data, since they're deterministic given fixed inputs. The DL model's *initial weights and training trajectory* are seeded and reproducible on the *same* machine/TensorFlow build (see `set_global_determinism()` in `src/model_cnn_lstm.py`), but small numerical differences can still appear across different hardware/TensorFlow versions (CPU vs. GPU, different BLAS/cuDNN builds) — a well-known limitation of floating-point neural network training, not a bug in this pipeline. Re-run `python main.py` on your machine to regenerate all figures/tables in `results/`.
+> ⚠️ **Reproducibility note:** the econometric baselines (ARIMA/GARCH/GJR-GARCH/HAR-RV) reproduce to the displayed digit on any machine given the same data, since they're deterministic given fixed inputs. The DL model's *initial weights and training trajectory* are seeded and reproducible on the *same* machine/TensorFlow build (see `set_global_determinism()` in `src/model_cnn_lstm.py`), but small numerical differences can still appear across different hardware/TensorFlow versions (CPU vs. GPU, different BLAS/cuDNN builds) — a well-known limitation of floating-point neural network training, not a bug in this pipeline. The images above are embedded directly from `results/`, which `python main.py` overwrites on every run — re-run it on your machine to regenerate them, and don't be surprised if the numbers differ slightly from what's pictured here for the DL-based rows specifically.
 
 ---
 
@@ -305,7 +305,7 @@ crypto-horserace/
 │   └── 📂 processed/                # Fully fused multimodal panels
 │
 ├── 📂 docs/
-│   └── 📂 figures/                  # Curated result figures embedded in this README
+│   └── 📂 figures/                  # Backup copies of the figures embedded below (README images actually load from results/, since that's regenerated on every run — see note under Results)
 │
 └── 📂 results/                      # Output figures, tables & benchmark reports
 ```
