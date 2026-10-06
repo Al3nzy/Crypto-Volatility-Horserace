@@ -538,27 +538,32 @@ def mc_dropout_intervals(model, X_test: np.ndarray, target_scaler, passes: int =
     """
     import tensorflow as tf
 
-    # Build a callable that activates Dropout but freezes BatchNorm
-    @tf.function
-    def _mc_forward(x):
-        out = x
-        for layer in model.layers:
-            if isinstance(layer, tf.keras.layers.Dropout):
-                out = layer(out, training=True)   # Dropout ON
-            elif isinstance(layer, tf.keras.layers.InputLayer):
-                continue
-            elif hasattr(layer, 'call'):
-                try:
-                    out = layer(out, training=False)  # BatchNorm frozen
-                except TypeError:
-                    out = layer(out)
-        return out
-
     preds = []
-    for _ in range(passes):
-        y = _mc_forward(X_test).numpy()
-        y = target_scaler.inverse_transform(y).flatten()
-        preds.append(y)
+    # A Functional model's layer list is not a sequential pipeline: layers may
+    # have multiple inputs (e.g. MultiHeadAttention) and skip connections.
+    # Call the model itself so Keras follows its graph, while freezing BatchNorm
+    # layers to keep training=True from updating their moving statistics.
+    batch_norm_layers = [
+        layer for layer in model.layers
+        if isinstance(layer, tf.keras.layers.BatchNormalization)
+    ]
+    trainable_states = [layer.trainable for layer in batch_norm_layers]
+    try:
+        for layer in batch_norm_layers:
+            layer.trainable = False
+
+        @tf.function
+        def _mc_forward(x):
+            return model(x, training=True)  # Dropout ON; BatchNorm frozen above.
+
+        for _ in range(passes):
+            y = _mc_forward(X_test).numpy()
+            y = target_scaler.inverse_transform(y).flatten()
+            preds.append(y)
+    finally:
+        for layer, trainable in zip(batch_norm_layers, trainable_states):
+            layer.trainable = trainable
+
     arr = np.asarray(preds)  # (passes, n)
     mean_pred = arr.mean(axis=0)
     lower = np.quantile(arr, alpha / 2.0, axis=0)
