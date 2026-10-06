@@ -141,25 +141,39 @@ def run_diebold_mariano(e1: np.ndarray, e2: np.ndarray, h: int = 1) -> dict:
     Diebold-Mariano test for equal predictive accuracy.
     H0: both methods have equal forecast accuracy.
     e1, e2: squared forecast errors from model 1 and 2 (same length).
-    h: forecast horizon (1 for one-step-ahead).
+    h: forecast horizon (sets Newey-West HAC lag truncation).
+    Uses proper Bartlett kernel weights and centers on the full-sample mean.
     Returns: {"dm_stat": float, "p_value": float, "significant": bool}
     """
+    from scipy import stats
+
     d = e1 - e2  # loss differential (squared errors)
     n = len(d)
+    if n < 3:
+        return {"dm_stat": 0.0, "p_value": 1.0, "significant": False}
+
     d_bar = np.mean(d)
-    # HAC variance (Newey-West for serial correlation)
-    gamma0 = np.var(d)
-    gammas = []
-    for k in range(1, min(h, n)):
-        gamma_k = np.cov(d[:-k], d[k:])[0, 1] if len(d) > k else 0
-        gammas.append(gamma_k * 2)
-    var_d = gamma0 + sum(gammas) if gammas else gamma0
+
+    # Newey-West HAC long-run variance with Bartlett kernel
+    # gamma_0: variance centered on d_bar
+    d_centered = d - d_bar
+    gamma_0 = float(np.mean(d_centered ** 2))
+
+    # Autocovariances with Bartlett weights: w_k = 1 - k/(h+1)
+    max_lag = min(h, n - 1)
+    hac_sum = 0.0
+    for k in range(1, max_lag + 1):
+        bartlett_weight = 1.0 - k / (max_lag + 1)
+        gamma_k = float(np.mean(d_centered[k:] * d_centered[:-k]))
+        hac_sum += 2.0 * bartlett_weight * gamma_k
+
+    var_d = gamma_0 + hac_sum
     if var_d <= 0:
         var_d = 1e-10
+
     dm_stat = d_bar / np.sqrt(var_d / n)
-    # Two-tailed p-value (approximate N(0,1))
-    from scipy import stats
-    p_value = 2 * (1 - stats.norm.cdf(abs(dm_stat)))
+    # Two-tailed p-value using t-distribution (better small-sample properties)
+    p_value = 2.0 * (1.0 - stats.t.cdf(abs(dm_stat), df=max(1, n - 1)))
     return {"dm_stat": float(dm_stat), "p_value": float(p_value), "significant": p_value < 0.05}
 
 
@@ -387,14 +401,22 @@ def plot_training_curves(history, save=True, output_suffix: str = ""):
     plt.close(fig)
 
 
-def build_regime_table(results: dict, output_suffix: str = "") -> pd.DataFrame:
+def build_regime_table(results: dict, merged_df: pd.DataFrame | None = None, output_suffix: str = "") -> pd.DataFrame:
     """
-    Regime-aware evaluation using test-period realized volatility and returns:
+    Regime-aware evaluation using test-period realized volatility and market returns:
     - calm: vol <= p33
-    - bear: return < 0 and p33 < vol <= p67
-    - bull: return >= 0 and p33 < vol <= p67
     - crisis: vol > p67
+    - bull: p33 < vol <= p67 AND market return >= 0
+    - bear: p33 < vol <= p67 AND market return < 0
+
+    merged_df: the fused DataFrame with a Log_Return column for proper
+    bull/bear classification using actual market direction (not Δvolatility).
     """
+    # Pre-compute market returns from merged_df if available
+    market_ret_series = None
+    if merged_df is not None and "Log_Return" in merged_df.columns:
+        market_ret_series = merged_df["Log_Return"]
+
     rows = []
     for model_name, res in results.items():
         dates = pd.to_datetime(res.get("dates", []))
@@ -407,8 +429,14 @@ def build_regime_table(results: dict, output_suffix: str = "") -> pd.DataFrame:
         preds = preds[:n]
         actual = actual[:n]
 
-        actual_series = pd.Series(actual, index=dates)
-        ret = actual_series.diff().fillna(0.0).values
+        # Use market Log_Return for bull/bear direction (not Δvolatility)
+        if market_ret_series is not None:
+            ret = market_ret_series.reindex(dates).fillna(0.0).values
+        else:
+            # Fallback: use change in volatility (less accurate but functional)
+            actual_series = pd.Series(actual, index=dates)
+            ret = actual_series.diff().fillna(0.0).values
+
         q33, q67 = np.quantile(actual, [0.33, 0.67])
 
         regime = np.where(
@@ -466,7 +494,8 @@ def compute_backtest_metrics(
 
     mean_r = np.nanmean(strat_ret)
     std_r = np.nanstd(strat_ret) + eps
-    downside_std = np.nanstd(np.minimum(strat_ret, 0)) + eps
+    # Sortino: root-mean-squared deviation from zero target (not std of negatives)
+    downside_std = np.sqrt(np.nanmean(np.minimum(strat_ret, 0) ** 2)) + eps
 
     equity = np.cumprod(1 + strat_ret)
     peak = np.maximum.accumulate(equity)
@@ -504,10 +533,30 @@ def build_backtest_table(results: dict, cost_bps: float, output_suffix: str = ""
 def mc_dropout_intervals(model, X_test: np.ndarray, target_scaler, passes: int = 50, alpha: float = 0.10):
     """
     Monte-Carlo dropout intervals for DL predictions.
+    Keeps Dropout active for stochastic sampling while freezing
+    BatchNormalization to prevent test-data leakage into moving statistics.
     """
+    import tensorflow as tf
+
+    # Build a callable that activates Dropout but freezes BatchNorm
+    @tf.function
+    def _mc_forward(x):
+        out = x
+        for layer in model.layers:
+            if isinstance(layer, tf.keras.layers.Dropout):
+                out = layer(out, training=True)   # Dropout ON
+            elif isinstance(layer, tf.keras.layers.InputLayer):
+                continue
+            elif hasattr(layer, 'call'):
+                try:
+                    out = layer(out, training=False)  # BatchNorm frozen
+                except TypeError:
+                    out = layer(out)
+        return out
+
     preds = []
     for _ in range(passes):
-        y = model(X_test, training=True).numpy()
+        y = _mc_forward(X_test).numpy()
         y = target_scaler.inverse_transform(y).flatten()
         preds.append(y)
     arr = np.asarray(preds)  # (passes, n)

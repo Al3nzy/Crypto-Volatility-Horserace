@@ -28,6 +28,7 @@ a different `seed` to `build_model()` (as the REPRO_SEEDS sweep in main.py
 does) to deliberately vary it.
 """
 import os
+import gc
 import random
 
 # Must be set before TensorFlow is imported to take effect.
@@ -102,25 +103,26 @@ class AttentionWithWeights(layers.Layer):
 def build_model(window_size: int, num_features: int, seed: int | None = None) -> Model:
     """
     Build and compile the CNN-BiLSTM-Attention model with L2 regularization.
-    Reseeds Python/NumPy/TF immediately before construction so weight
-    initialization is deterministic and reproducible across runs regardless
-    of how much other random-drawing code ran earlier in the process. Pass
-    `seed` to deliberately build a model with a different initialization
-    (used by the REPRO_SEEDS sweep in main.py); omitted, it uses the global
-    config SEED.
+    Clears stale TF graphs first to prevent memory leak across the 100+
+    model builds per full run (walkforward, ablations, seeds, cross-asset).
     Returns: keras.Model
     """
+    # ── Perf 1: Clear stale TF graphs to prevent memory leak ──
+    tf.keras.backend.clear_session()
+    gc.collect()
+
     set_global_determinism(seed if seed is not None else SEED)
     reg = keras.regularizers.l2(L2_REG)
     inp = layers.Input(shape=(window_size, num_features), name="input")
 
-    # ── 1D-CNN block ──
+    # ── 1D-CNN block (Algo 2: pre-activation BatchNorm, He et al. 2016) ──
     x = layers.Conv1D(
         filters=CNN_FILTERS, kernel_size=CNN_KERNEL_SIZE,
-        activation="relu", padding="same", name="conv1d",
+        activation=None, padding="same", name="conv1d",
         kernel_regularizer=reg
     )(inp)
     x = layers.BatchNormalization(name="bn_cnn")(x)
+    x = layers.Activation("relu", name="relu_cnn")(x)
     x = layers.Dropout(DROPOUT_RATE, name="drop_cnn")(x)
 
     # ── Bidirectional LSTM block ──
@@ -131,7 +133,7 @@ def build_model(window_size: int, num_features: int, seed: int | None = None) ->
     )(x)
     x = layers.Dropout(DROPOUT_RATE, name="drop_lstm")(x)
 
-    # ── Multi-Head Attention block ──
+    # ── Multi-Head Attention block (Algo 1: residual connection, Vaswani 2017) ──
     mha = layers.MultiHeadAttention(
         num_heads=NUM_ATTENTION_HEADS,
         key_dim=ATTENTION_KEY_DIM,
@@ -140,7 +142,8 @@ def build_model(window_size: int, num_features: int, seed: int | None = None) ->
     attn_output, attn_scores = mha(
         x, x, return_attention_scores=True
     )
-    x = layers.LayerNormalization(name="ln_attn")(attn_output)
+    x = layers.Add(name="attn_residual")([x, attn_output])
+    x = layers.LayerNormalization(name="ln_attn")(x)
 
     # ── Aggregation & output ──
     x = layers.GlobalAveragePooling1D(name="gap")(x)
@@ -214,7 +217,8 @@ def extract_attention_weights(trained_model: Model, X_sample: np.ndarray):
     """
     Run forward pass on X_sample and return attention weights.
     Shape: (batch, num_heads, window_size, window_size)
+    Uses direct model call instead of .predict() to avoid tf.data overhead.
     """
     attn_model = build_attention_model(trained_model)
-    _, attn_weights = attn_model.predict(X_sample, verbose=0)
-    return attn_weights
+    _, attn_weights = attn_model(X_sample, training=False)
+    return attn_weights.numpy()

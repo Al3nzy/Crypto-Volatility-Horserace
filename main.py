@@ -145,33 +145,46 @@ def run_dl_experiment(
 def run_cross_asset_generalization(feature_cols, holdout_ticker, forecast_horizon):
     """
     Train on train windows from all non-holdout assets; test on holdout asset.
+    Uses a unified scaler fitted on concatenated raw training data to ensure
+    consistent normalization across assets (Perf 4 fix).
     """
-    train_X, train_y = [], []
-    holdout = run_fusion_pipeline(
-        feature_cols=feature_cols,
-        primary_ticker=holdout_ticker,
-        forecast_horizon=forecast_horizon,
+    from src.fuse_data import (
+        fuse_pillars, create_windows, split_data, scale_window_splits,
+        _effective_feature_cols, FEATURE_COLS, TARGET_COL,
     )
+
+    # Collect raw (unscaled) train/test splits from each asset
+    raw_train_X, raw_train_y = [], []
+    raw_holdout_X_test, raw_holdout_y_test = None, None
+
     for t in TICKERS:
+        merged = fuse_pillars(primary_ticker=t)
+        cols = _effective_feature_cols(merged, list(feature_cols or FEATURE_COLS))
+        X_raw = merged[cols].values
+        y_raw = merged[[TARGET_COL]].values
+        X_win, y_win = create_windows(X_raw, y_raw, forecast_horizon=forecast_horizon)
+        X_tr, X_te, y_tr, y_te = split_data(X_win, y_win)
+
         if t == holdout_ticker:
-            continue
-        p = run_fusion_pipeline(
-            feature_cols=feature_cols,
-            primary_ticker=t,
-            forecast_horizon=forecast_horizon,
-        )
-        train_X.append(p["X_train"])
-        train_y.append(p["y_train"])
-    X_train = np.concatenate(train_X, axis=0)
-    y_train = np.concatenate(train_y, axis=0)
-    X_test = holdout["X_test"]
-    y_test = holdout["y_test"]
+            raw_holdout_X_test = X_te
+            raw_holdout_y_test = y_te
+        else:
+            raw_train_X.append(X_tr)
+            raw_train_y.append(y_tr)
+
+    X_train = np.concatenate(raw_train_X, axis=0)
+    y_train = np.concatenate(raw_train_y, axis=0)
+
+    # Fit a single unified scaler on the concatenated training data
+    X_train, X_test, y_train, y_test, feat_scaler, tgt_scaler = scale_window_splits(
+        X_train, raw_holdout_X_test, y_train, raw_holdout_y_test
+    )
 
     model = build_model(X_train.shape[1], X_train.shape[2])
     train_model(model, X_train, y_train)
     pred_scaled = model.predict(X_test, verbose=0)
-    pred = holdout["tgt_scaler"].inverse_transform(pred_scaled).flatten()
-    actual = holdout["tgt_scaler"].inverse_transform(y_test).flatten()
+    pred = tgt_scaler.inverse_transform(pred_scaled).flatten()
+    actual = tgt_scaler.inverse_transform(y_test).flatten()
     return {
         "Model": "CrossAsset_CNN-BiLSTM-Attn",
         "Holdout": holdout_ticker,
@@ -423,7 +436,7 @@ def main():
             # Comparison table, stress windows, regime table, DM tests
             build_comparison_table(all_results, output_suffix=suf)
             shock_df = build_shock_window_table(all_results, SHOCK_WINDOWS, output_suffix=suf)
-            build_regime_table(all_results, output_suffix=suf)
+            build_regime_table(all_results, merged_df=merged_df, output_suffix=suf)
             build_dm_table(all_results, forecast_horizon=horizon, output_suffix=suf)
             build_backtest_table(all_results, TRANSACTION_COST_BPS, output_suffix=suf)
 

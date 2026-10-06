@@ -102,7 +102,7 @@ def fuse_pillars(primary_ticker: str | None = None, use_cache: bool = True) -> p
     merged.sort_values(["Asset", "Date"], inplace=True)
 
     numeric_cols = merged.select_dtypes(include=[np.number]).columns.tolist()
-    merged[numeric_cols] = merged.groupby("Asset")[numeric_cols].ffill().bfill()
+    merged[numeric_cols] = merged.groupby("Asset")[numeric_cols].ffill().fillna(0)
 
     # HAR-style trailing realized-volatility features (see RV_FEATURE_COLS
     # in config.py for the full rationale). Computed per-asset with a
