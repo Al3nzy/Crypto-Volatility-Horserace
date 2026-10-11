@@ -168,19 +168,28 @@ The benchmarking harness compares 12 distinct models under identical train/test 
 
 ## 📊 Evaluation & Benchmarking Suite
 
+Every neural forecast is the **mean of several seeds** (`DL_SEEDS`); the per-seed spread is written to `seed_metrics.csv` / `seed_summary.csv`. Interpretation, calibration and robustness analyses use the first seed's network.
+
 ```
 results/
-├── 📄 comparison_table_BTC_USD_h1.csv      # Primary metrics: RMSE, MAE, DoC, R²
-├── 📄 dm_tests_BTC_USD_h1.csv               # Pairwise Diebold-Mariano tests & p-values
-├── 📄 shock_window_metrics_BTC_USD_h1.csv   # Performance in stress windows (LUNA, FTX)
-├── 📄 regime_metrics_BTC_USD_h1.csv         # Performance across Calm, Bull, Bear, Crisis
-├── 📄 backtest_metrics_BTC_USD_h1.csv       # Volatility timing Sharpe, Sortino, Drawdown
-├── 📄 interval_metrics_BTC_USD_h1.csv       # MC Dropout prediction interval coverage & width
-├── 📄 sensitivity_metrics_BTC_USD_h1.csv    # Robustness against missing data & noise
-├── 🖼️ predictions_overlay_BTC_USD_h1.png   # Time-series actual vs predicted overlay
-├── 🖼️ attention_heatmap_BTC_USD_h1.png     # Attention weights heatmap across timesteps
-├── 🖼️ feature_importance_BTC_USD_h1.png    # Attention-weighted feature importance
-└── 🖼️ training_curves_BTC_USD_h1.png       # Training vs Validation loss & MAE
+├── comparison_table_<A>_USD_h<h>.csv        # RMSE, MAE, DoC (+ binomial p vs 0.5), R², per model
+├── dm_tests_<A>_USD_h<h>.csv                # Diebold-Mariano: lag h-1 + Harvey-Leybourne-Newbold, raw and Holm p-values
+├── ratio_ci_<A>_USD_h<h>.csv                # RMSE ratio vs Naive / HAR-RV / ARIMA / KRP with moving-block bootstrap 95% CI
+├── regime_metrics_<A>_USD_h<h>.csv          # calm / bull / bear / high_vol (terciles of realized vol in the test sample)
+├── predictions_<A>_USD_h<h>.csv             # every model's aligned forecasts (figures and tests can be rebuilt offline)
+├── attention_lag_profile_*.csv/.png         # temporal attention averaged over ALL test windows, heads and queries
+├── attention_summary_*.csv                  # min/max weight, normalised entropy (1 = uniform), weight on the last 3 days
+├── permutation_importance_*.csv/.png        # RMSE increase when a feature / pillar is shuffled (standalone network and AHI)
+├── interval_metrics_*.csv                   # MC-dropout AND split-conformal coverage/width, standalone network and AHI
+├── sensitivity_metrics_*.csv                # missing/noise tests on all channels and on sentiment+on-chain only, both models
+├── ablation_results_*.csv, ablation_runs_*  # feature-group ablation, mean/std over ABLATION_SEEDS (BTC-USD)
+├── rolling_*  (comparison, dm, regime, shock_window, ratio_ci, predictions, folds)
+│                                            # rolling-origin evaluation from ROLLING_START that spans LUNA and FTX
+├── cross_asset_generalization.csv           # per-asset-scaled transfer, every horizon
+├── seed_metrics.csv, seed_summary.csv       # per-seed RMSE/MAE for every neural model
+├── feature_audit.csv                        # which input channels were active, and why any were dropped
+├── sample_manifest.csv, run_manifest.json   # sample sizes, test dates, purge counts, library versions, profile
+└── paper_inputs/                            # produced by scripts/build_paper_inputs.py (all manuscript tables)
 ```
 
 ### Metrics Computed
@@ -198,56 +207,56 @@ results/
 
 ## 📈 Results
 
-The numbers below are from an actual full run of this pipeline (BTC-USD, h=1, `TRAIN_RATIO=0.80`, 2020-01-01 to 2024-12-31, 1,438 train / 360 test windows). They are refreshed periodically as the pipeline evolves, not hand-picked — see `results/comparison_table_*.csv` and `results/regime_metrics_*.csv` for the full multi-asset, multi-horizon output after running `python main.py` yourself. Ranking below is by test RMSE.
+Results are not hard-coded in this README. After a run, `python scripts/build_paper_inputs.py` writes the aggregate tables to `results/paper_inputs/` (see `KEY_NUMBERS.md`), and the manuscript tables are generated from those files.
 
-### 1. Comparative performance (BTC-USD, h=1)
+**Benchmarks that matter for the "gain beyond persistence" question.** Besides Naive Persistence, ARIMA and HAR-RV, the suite includes `KRP` (known-return persistence): the target is the sample std of the last 14 daily returns, so at origin *t* the 14-*h* returns already observed inside the target window are known. KRP uses them (parameter-free) and only forecasts the *h* unseen days. GARCH/GJR-GARCH are evaluated on the same estimand (`GARCH_ESTIMAND="window"`). Hybrid forecasts exist with an ARIMA stage (**AHI**) and a KRP stage (**AHI-K**).
 
-| Model                             |    RMSE |     MAE | DoC   |      R² |
-|:-----------------------------------|--------:|--------:|:------|--------:|
-| HAR-RV                             | 0.00246 | 0.00146 | 44.0% |   0.913 |
-| ARIMA                              | 0.00248 | 0.00140 | 46.2% |   0.911 |
-| Residual Hybrid (ARIMA+DL-resid)   | 0.00249 | 0.00143 | 46.5% |   0.911 |
-| GRU-only                           | 0.00324 | 0.00244 | 50.4% |   0.848 |
-| LSTM-only                          | 0.00392 | 0.00302 | 47.9% |   0.777 |
-| Hybrid (ARIMA+DL)                  | 0.00404 | 0.00319 | 50.1% |   0.764 |
-| GARCH                              | 0.00604 | 0.00531 | 51.5% |   0.473 |
-| CNN-only                           | 0.00637 | 0.00517 | 49.3% |   0.413 |
-| GJR-GARCH                          | 0.00644 | 0.00563 | 52.6% |   0.401 |
-| **CNN-BiLSTM-Attn (flagship)**     | 0.00730 | 0.00579 | 52.9% |   0.229 |
-| SVR (RBF)                          | 0.01350 | 0.01070 | 53.8% |  -1.6   |
-| Naive Persistence                  | 0.01888 | 0.01745 | 46.5% | -254.3  |
+---
 
-The honest headline finding — consistent with the paper's framing as a question ("quantifying gains beyond persistence baselines"), not a foregone conclusion — is that **HAR-RV, ARIMA, and the ARIMA-residual hybrid remain the strongest point forecasters** on raw RMSE for this asset/horizon. Crypto realized volatility is strongly autocorrelated, so a lagged-volatility-driven model has a structural head start (see feature importance below). The flagship multimodal model clearly beats Naive Persistence and SVR and holds a positive R², but does not yet beat the econometric baselines outright. Per-pair Diebold-Mariano significance is in `results/dm_tests_*.csv`.
+## ▶️ Running it
 
-### 2. Regime-conditioned RMSE
+```powershell
+python tests/test_fixes.py                       # 10 checks, no training
+$env:CRYPTO_HORSERACE_PROFILE="standard"; python main.py
+```
 
-| Model              |   Bull |   Bear |   Calm | Crisis (LUNA/FTX windows) |
-|:-------------------|-------:|-------:|-------:|---------------------------:|
-| HAR-RV              | 0.0016 | 0.0022 | 0.0024 |                      0.0029 |
-| ARIMA                | 0.0019 | 0.0020 | 0.0023 |                      0.0030 |
-| GARCH                 | 0.0045 | 0.0054 | 0.0079 |                      0.0047 |
-| CNN-BiLSTM-Attn        | 0.0035 | 0.0037 | 0.0093 |                      0.0078 |
-| Naive Persistence      | 0.0158 | 0.0181 | 0.0110 |                      0.0257 |
+* **Progress is shown.** Every network fit prints its Keras progress bar, and a banner like `TASK 7/26: rolling BTC-USD h=3 (elapsed ..., rough time left ... min)` precedes each task. TensorFlow's `use_unbounded_threadpool` log noise is silenced (`TF_CPP_MIN_LOG_LEVEL=3` is set in `config.py`).
+* **Every experiment is a separate process (task).** TensorFlow/Keras leaks about 45 MB per trained model inside one Python process (measured), which made a single long run grow beyond 40 GB. Tasks are `combo` (hold-out evaluation of all models for one asset/horizon), `rolling`, `ablation` and `cross`.
+* **Resume.** Finished tasks write `results/_done/<task>.json`; running the same command again skips them (unless the configuration changed). A crash costs one task, not the whole run. `CRYPTO_HORSERACE_RESUME=0` forces a fresh run.
+* **One run per results folder.** An OS lock (`results/.run.lock`) stops a second copy from starting; use `CRYPTO_HORSERACE_RESULTS_DIR` for a separate folder.
+* **Faster:** `python main.py --workers 3` runs three tasks at once (progress bars then go to `results/logs/<task>.log`).
 
-Regime slicing (`results/regime_metrics_*.csv`) shows the flagship model actually **beats GARCH/GJR-GARCH in trending bull and bear markets**, but loses ground in calm and crisis windows where GARCH's conditional-variance recursion and HAR-RV/ARIMA's direct use of lagged realized volatility dominate. This kind of regime-dependent breakdown, not just a single aggregate RMSE, is the intended use of this benchmark.
+| Profile | Seeds (standalone / AHI-K / AHI) | Rolling | Ablation | Transfer | Rough cost (CPU) |
+| :-- | :-- | :-- | :-- | :-- | :-- |
+| `smoke` | 2 / 2 / 1, 3 epochs | 2 epochs | 1 seed | h=1 | ~15 min, 2 assets x 1 horizon |
+| `lite` | 1 / 1 / 1 | 240-day folds, 25 epochs | h=1, 1 seed | h=1, 1 seed | ~2-3 h |
+| `standard` (default) | 2 / 2 / 1 | 180-day folds, 30 epochs | h=1, 2 seeds | h=1, 1 seed | ~3-5 h |
+| `full` | 3 / 3 / 3 | 120-day folds, 40 epochs, 2 seeds, + ARIMA hybrid | h=1,3,7, 3 seeds | all horizons, 3 seeds | 10 h+ |
 
-### 3. What the model actually attends to
+**Network inputs.** `CRYPTO_HORSERACE_FEATURE_SET=stationary` (default) feeds scale-free transforms (log return, |return|, ln(High/Low), log-volume change, ln(on-chain / 30-day mean), Fear & Greed, trailing realised volatility); `raw` feeds price/volume levels as in earlier runs. The ablation always includes `market_raw_levels` and `full_raw_levels` so the two are compared directly.
 
-<img src="results/feature_importance_BTC_USD_h1.png" alt="Attention-weighted feature importance" width="700"/>
+**Hybrids are gated.** AHI and AHI-K forecast `floor(stage + lambda * network)`, with `lambda` in {0, .25, .5, .75, 1} chosen on the last 15% of the training windows (per fold in the rolling evaluation). `results/gate_lambda.csv` reports lambda and the ungated test RMSE, so the effect of the gate is visible. Forecasts are floored at half the smallest training volatility.
 
-Attention-weighted feature importance confirms the model leans most on `Log_Return`, `Market_FearGreed`, and `Tx_Count`, with the engineered `Volatility` / `RV_Week` / `RV_Month` autoregressive features (added specifically to give the DL model the same lagged-volatility signal ARIMA/HAR-RV rely on) also contributing.
+---
 
-### 4. Forecast vs. realized volatility, with crisis windows marked
+## 🔬 Evaluation protocol (v2) and what changed
 
-<img src="results/predictions_overlay_BTC_USD_h1.png" alt="Predictions overlay with LUNA and FTX crisis windows" width="800"/>
+| Issue found in the earlier run | Fix |
+| :--- | :--- |
+| Naive Persistence targets were passed through the target scaler's *inverse* transform (RMSE 0.0189, R² -254), and the same corrupted series was the "actual" in the overlay figure and in DM pairs where Naive came first | Raw targets are used; `assert_common_actual` stops the run if any two models are scored on different realized series; the DM table refuses such pairs |
+| Test sample is calendar 2024: LUNA and FTX lie in the training split, so the shock-window tables were empty and the "FTX" attention heatmap was test window 0 | New **rolling-origin evaluation** from `ROLLING_START` (2022-01-01) to the end of the sample: expanding window, networks re-fitted every `ROLLING_STEP_DAYS`, scalers re-fitted per fold, labels purged. Shock windows are populated; hold-out results are kept |
+| Labels of the last h-1 training windows are realized after the first test origin | Purged (`PURGE_TRAIN_OVERLAP`) in the hold-out split, HAR-RV, and every rolling fold |
+| GARCH/GJR forecast a one-day conditional std but are scored against a 14-day rolling std | `GARCH_ESTIMAND="window"` forecasts the rolling target itself; `"daily"` reproduces the old behaviour |
+| Persistence baselines ignored the 14-*h* known returns inside the target window | New `KRP` baseline and AHI-K hybrid |
+| Cross-asset transfer pooled raw price/volume channels under one scaler (BTC test closes mapped to 8-22 on a [0,1] scale) and ran at h=1 only | Every asset scaled with its own training statistics; all horizons |
+| One seed per neural model (run-to-run RMSE spread ~20% at BTC h=1) | Seed ensembles; per-seed metrics saved; ablation with several seeds, mean/std, plus new `rv_only`, `market_rv`, `full_minus_sentiment`, `full_minus_onchain` configurations |
+| Attention heatmap tiled one temporal weight across feature columns; feature importance used one test window and scaled with input magnitude | Lag profile over all windows and heads with entropy summary; permutation importance by feature and pillar on the whole test set |
+| Robustness and MC-dropout analyses covered only the standalone network | Both models, plus split-conformal intervals; perturbations on all channels and on sentiment+on-chain only |
+| DM: truncation lag h, normal-style reference, no multiplicity control | Lag h-1, Harvey-Leybourne-Newbold correction, Student-t(n-1), Holm-adjusted p-values |
+| Offline market cache re-derived Log_Return/Volatility from an already-truncated cache, losing 14 more rows on every `USE_MARKET_API=0` run (and re-saving the shrunken file) | Cached derived columns are kept; the row count is stable across repeated offline runs |
+| Windowing note: the 15% validation tail is time-ordered, and test data are never used during fitting (checked) | unchanged |
 
-### 5. Temporal attention pattern (FTX crash window)
-
-<img src="results/attention_heatmap_(FTX_Crash_Window)_BTC_USD_h1.png" alt="Attention heatmap during the FTX crash window" width="800"/>
-
-The model attends overwhelmingly to the two most recent lookback timesteps (`t-13`, `t-12` in a 14-day window) fairly uniformly across features, consistent with the strong short-lag persistence in realized crypto volatility.
-
-> ⚠️ **Reproducibility note:** the econometric baselines (ARIMA/GARCH/GJR-GARCH/HAR-RV) reproduce to the displayed digit on any machine given the same data, since they're deterministic given fixed inputs. The DL model's *initial weights and training trajectory* are seeded and reproducible on the *same* machine/TensorFlow build (see `set_global_determinism()` in `src/model_cnn_lstm.py`), but small numerical differences can still appear across different hardware/TensorFlow versions (CPU vs. GPU, different BLAS/cuDNN builds) — a well-known limitation of floating-point neural network training, not a bug in this pipeline. The images above are embedded directly from `results/`, which `python main.py` overwrites on every run — re-run it on your machine to regenerate them, and don't be surprised if the numbers differ slightly from what's pictured here for the DL-based rows specifically.
+`python tests/test_fixes.py` checks the naive-target fix, label purging, KRP, DM properties and the cache idempotence without training any model.
 
 ---
 
@@ -258,7 +267,12 @@ Recent additions for runtime and reproducibility, all opt-in via environment var
 | Variable | Default | Effect |
 | :--- | :--- | :--- |
 | `CRYPTO_HORSERACE_BASELINE_JOBS` | `cpu_count - 1` | Worker processes for the per-day ARIMA/GARCH/GJR-GARCH rolling refits (`src/baselines.py`). Each day's refit is independent, so this only changes wall-clock time, never the numbers — verified to reproduce identical RMSE at `n_jobs=1` vs parallel. |
-| `CRYPTO_HORSERACE_FAST_DEV` | off | Skips the walk-forward re-estimation, 8-way ablation feature-set suite, multi-seed reproducibility matrix, and cross-asset generalization for fast iteration while debugging. Leave unset for a full paper-grade run. |
+| `CRYPTO_HORSERACE_FAST_DEV` | off | Skips the ablation suite, rolling-origin evaluation and cross-asset transfer for fast iteration while debugging. Leave unset for a full paper-grade run. |
+| `CRYPTO_HORSERACE_PROFILE` | `standard` | `smoke` (minutes; verifies every code path, numbers are not results), `lite` (one seed; closest to the original cost), `standard` (3-seed ensembles, 3-seed ablations), `full` (5 seeds). Defined in `config.py`. |
+| `CRYPTO_HORSERACE_TICKERS`, `CRYPTO_HORSERACE_HORIZONS` | all | Restrict the universe, e.g. `BTC-USD,ETH-USD` and `1,3` (used by the smoke test). |
+| `CRYPTO_HORSERACE_RESULTS_DIR` | `results/` | Write outputs elsewhere, so a smoke run never overwrites real results. |
+| `CRYPTO_HORSERACE_FORECAST_CACHE`, `CRYPTO_HORSERACE_CACHE_DIR` | on, `cache/` | Rolling-ARIMA forecasts are cached by a hash of the series, horizon and order; the baseline and the linear stage of AHI share them. |
+| `CRYPTO_HORSERACE_GARCH_ESTIMAND` | `window` | `daily` restores the legacy one-day conditional-std forecast. |
 | `CRYPTO_HORSERACE_USE_MARKET_API` | `1` | Set to `0` to skip the yfinance network call and reuse the local market data cache (safe for a fixed historical `START_DATE`/`END_DATE`). |
 | `CRYPTO_HORSERACE_USE_API` | `1` | Same idea for Pillars 2/3 (sentiment, on-chain) — set to `0` to reuse each pillar's previously-saved feature CSV instead of re-hitting CryptoPanic/Google Trends/Fear&Greed/CoinMetrics. |
 
@@ -278,7 +292,7 @@ crypto-horserace/
 ├── 📜 README.md                     # Project documentation
 │
 ├── 📂 scripts/                      # Utility and setup scripts
-│   ├── 🔄 recompute_sensitivity_doc.py
+│   ├── 📊 build_paper_inputs.py     # results/ -> paper_inputs/ (every manuscript table)
 │   └── 🐧 wsl_tensorflow_gpu_setup.sh
 │
 ├── 📂 src/                          # Core source code modules
@@ -295,6 +309,8 @@ crypto-horserace/
 │   ├── 🪙 ingest_market_cmc.py      # CoinMarketCap API client
 │   ├── ⛓️ ingest_onchain.py         # Coin Metrics & Glassnode client
 │   ├── 📰 ingest_sentiment.py       # Fear & Greed + CryptoPanic client
+│   ├── 🔬 interpret.py              # attention profile, permutation importance, conformal, perturbations
+│   ├── 🧪 protocol.py               # seed ensembles, rolling-origin evaluation, cross-asset transfer
 │   ├── 🧠 model_cnn_lstm.py         # CNN-BiLSTM-Attention Keras architecture
 │   ├── 🧬 model_dl_baselines.py     # CNN-only, LSTM-only, GRU-only baselines
 │   └── 🤖 sentiment_finbert.py      # HuggingFace FinBERT sentiment classifier

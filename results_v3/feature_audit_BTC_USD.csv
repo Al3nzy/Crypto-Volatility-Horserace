@@ -1,0 +1,12 @@
+Ticker,Feature,Pillar,Status,UniqueValues
+BTC-USD,Log_Return,market,active,1812
+BTC-USD,Abs_Return,market,active,1812
+BTC-USD,Range_HL,market,active,1812
+BTC-USD,LogVolume_Change,market,active,1812
+BTC-USD,Market_FearGreed,sentiment,active,87
+BTC-USD,FinBERT_Polarity,sentiment,dropped_constant,1
+BTC-USD,Active_Addresses_LogRatio,onchain,active,1812
+BTC-USD,Tx_Count_LogRatio,onchain,active,1812
+BTC-USD,Volatility,lagged_vol,active,1812
+BTC-USD,RV_Week,lagged_vol,active,1812
+BTC-USD,RV_Month,lagged_vol,active,1812

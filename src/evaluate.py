@@ -10,7 +10,8 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import seaborn as sns
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-from config import RESULTS_DIR, LOOKBACK_WINDOW
+from config import (RESULTS_DIR, LOOKBACK_WINDOW, DM_HLN_CORRECTION, BOOTSTRAP_RESAMPLES,
+                    BOOTSTRAP_BLOCK_MIN, SEED)
 
 plt.rcParams.update({
     "figure.figsize": (14, 5),
@@ -42,6 +43,18 @@ def directional_accuracy(y_true, y_pred, eps: float = 1e-12) -> float:
     return float(np.mean(np.sign(dt[valid]) == np.sign(dp[valid])))
 
 
+def directional_counts(y_true, y_pred, eps: float = 1e-12):
+    """(hits, n) behind directional_accuracy, for a binomial test against 0.5."""
+    y_true = np.asarray(y_true, dtype=float).flatten()
+    y_pred = np.asarray(y_pred, dtype=float).flatten()
+    n = min(len(y_true), len(y_pred))
+    if n < 2:
+        return 0, 0
+    dt, dp = np.diff(y_true[:n]), np.diff(y_pred[:n])
+    valid = np.abs(dt) > eps
+    return int(np.sum(np.sign(dt[valid]) == np.sign(dp[valid]))), int(valid.sum())
+
+
 def test_r2(y_true, y_pred) -> float:
     y_true = np.asarray(y_true, dtype=float).flatten()
     y_pred = np.asarray(y_pred, dtype=float).flatten()
@@ -66,12 +79,17 @@ def build_comparison_table(results: dict, output_suffix: str = "") -> pd.DataFra
         act = np.asarray(res.get("actual", []))
         doc = directional_accuracy(act, pred)
         r2v = test_r2(act, pred)
+        hits, n_doc = directional_counts(act, pred)
+        from scipy import stats as _st
+        doc_p = float(_st.binomtest(hits, n_doc, 0.5).pvalue) if n_doc > 0 else float("nan")
         rows.append({
             "Model": name,
             "RMSE": res["rmse"],
             "MAE": res["mae"],
             "DoC": doc,
             "R2": r2v,
+            "DoC_N": n_doc,
+            "DoC_p_vs_0.5": doc_p,
         })
     df = pd.DataFrame(rows).set_index("Model")
     df.sort_values("RMSE", inplace=True)
@@ -138,43 +156,55 @@ def build_shock_window_table(results: dict, shock_windows: list, output_suffix: 
 
 def run_diebold_mariano(e1: np.ndarray, e2: np.ndarray, h: int = 1) -> dict:
     """
-    Diebold-Mariano test for equal predictive accuracy.
-    H0: both methods have equal forecast accuracy.
-    e1, e2: squared forecast errors from model 1 and 2 (same length).
-    h: forecast horizon (sets Newey-West HAC lag truncation).
-    Uses proper Bartlett kernel weights and centers on the full-sample mean.
-    Returns: {"dm_stat": float, "p_value": float, "significant": bool}
+    Diebold-Mariano test for equal predictive accuracy on squared-error loss.
+
+    e1, e2: squared forecast errors of the two models (same length).
+    The long-run variance of the loss differential uses a Bartlett kernel with
+    truncation lag h-1, the textbook choice for h-step-ahead forecasts (the
+    differential of an h-step error is MA(h-1) under the null). With
+    DM_HLN_CORRECTION the Harvey-Leybourne-Newbold small-sample factor
+        sqrt((n + 1 - 2h + h(h-1)/n) / n)
+    rescales the statistic and the Student-t(n-1) reference distribution is
+    used. Returns dm_stat, two-sided p_value, and the 5% significance flag.
     """
     from scipy import stats
 
-    d = e1 - e2  # loss differential (squared errors)
+    d = np.asarray(e1, dtype=float) - np.asarray(e2, dtype=float)
     n = len(d)
     if n < 3:
         return {"dm_stat": 0.0, "p_value": 1.0, "significant": False}
 
-    d_bar = np.mean(d)
-
-    # Newey-West HAC long-run variance with Bartlett kernel
-    # gamma_0: variance centered on d_bar
-    d_centered = d - d_bar
-    gamma_0 = float(np.mean(d_centered ** 2))
-
-    # Autocovariances with Bartlett weights: w_k = 1 - k/(h+1)
-    max_lag = min(h, n - 1)
+    d_bar = float(np.mean(d))
+    dc = d - d_bar
+    gamma_0 = float(np.mean(dc ** 2))
+    max_lag = min(max(h - 1, 0), n - 1)
     hac_sum = 0.0
     for k in range(1, max_lag + 1):
-        bartlett_weight = 1.0 - k / (max_lag + 1)
-        gamma_k = float(np.mean(d_centered[k:] * d_centered[:-k]))
-        hac_sum += 2.0 * bartlett_weight * gamma_k
-
+        w = 1.0 - k / (max_lag + 1)
+        hac_sum += 2.0 * w * float(np.mean(dc[k:] * dc[:-k]))
     var_d = gamma_0 + hac_sum
     if var_d <= 0:
-        var_d = 1e-10
+        var_d = 1e-12
 
     dm_stat = d_bar / np.sqrt(var_d / n)
-    # Two-tailed p-value using t-distribution (better small-sample properties)
+    if DM_HLN_CORRECTION:
+        corr = (n + 1 - 2 * h + h * (h - 1) / n) / n
+        dm_stat *= np.sqrt(max(corr, 1e-12))
     p_value = 2.0 * (1.0 - stats.t.cdf(abs(dm_stat), df=max(1, n - 1)))
-    return {"dm_stat": float(dm_stat), "p_value": float(p_value), "significant": p_value < 0.05}
+    return {"dm_stat": float(dm_stat), "p_value": float(p_value), "significant": bool(p_value < 0.05)}
+
+
+def holm_adjust(p_values) -> np.ndarray:
+    """Holm step-down adjustment of a vector of p-values."""
+    p = np.asarray(p_values, dtype=float)
+    m = len(p)
+    order = np.argsort(p)
+    adj = np.empty(m)
+    running = 0.0
+    for rank, idx in enumerate(order):
+        running = max(running, (m - rank) * p[idx])
+        adj[idx] = min(1.0, running)
+    return adj
 
 
 def build_dm_table(results: dict, forecast_horizon: int = 1, output_suffix: str = "") -> pd.DataFrame:
@@ -188,9 +218,13 @@ def build_dm_table(results: dict, forecast_horizon: int = 1, output_suffix: str 
     for i, m1 in enumerate(names):
         for m2 in names[i + 1:]:
             a1 = np.asarray(results[m1]["actual"])
+            a2 = np.asarray(results[m2]["actual"])
             p1 = np.asarray(results[m1]["predictions"])
             p2 = np.asarray(results[m2]["predictions"])
-            n = min(len(a1), len(p1), len(p2))
+            n = min(len(a1), len(a2), len(p1), len(p2))
+            # Every model must be scored against the same realized series.
+            if not np.allclose(a1[:n], a2[:n], rtol=1e-6, atol=1e-10):
+                raise ValueError(f"DM: realized series of {m1} and {m2} differ; refusing to test.")
             e1 = (a1[:n] - p1[:n]) ** 2
             e2 = (a1[:n] - p2[:n]) ** 2
             dm = run_diebold_mariano(e1, e2, h=forecast_horizon)
@@ -202,6 +236,8 @@ def build_dm_table(results: dict, forecast_horizon: int = 1, output_suffix: str 
             })
     df = pd.DataFrame(pairs)
     if not df.empty:
+        df["p_holm"] = holm_adjust(df["p_value"].values)
+        df["Significant_holm"] = df["p_holm"] < 0.05
         print("\n--- DIEBOLD-MARIANO TESTS (H0: equal predictive accuracy) ---")
         for _, row in df.iterrows():
             sig = " *" if row["Significant"] else ""
@@ -268,11 +304,22 @@ def plot_predictions_overlay(results: dict, test_dates=None, save=True, output_s
         ("2022-05-05", "2022-05-20", "LUNA"),
         ("2022-11-05", "2022-11-20", "FTX"),
     ]
+    # Only annotate stress windows that overlap the plotted forecast range;
+    # otherwise axvspan silently stretches the x-axis to dates with no data.
+    all_dates = []
+    for res in results.values():
+        d = res.get("dates")
+        if d is not None and len(d):
+            all_dates.append(pd.to_datetime(d))
+    lo = min(d.min() for d in all_dates) if all_dates else None
+    hi = max(d.max() for d in all_dates) if all_dates else None
     for start, end, label in crash_windows:
         try:
-            ax.axvspan(pd.Timestamp(start), pd.Timestamp(end),
-                       alpha=0.12, color="red")
-            ax.text(pd.Timestamp(start), ax.get_ylim()[1] * 0.95, label,
+            s_ts, e_ts = pd.Timestamp(start), pd.Timestamp(end)
+            if lo is None or e_ts < lo or s_ts > hi:
+                continue
+            ax.axvspan(s_ts, e_ts, alpha=0.12, color="red")
+            ax.text(s_ts, ax.get_ylim()[1] * 0.95, label,
                     fontsize=9, color="red", fontweight="bold")
         except Exception:
             pass
@@ -405,7 +452,7 @@ def build_regime_table(results: dict, merged_df: pd.DataFrame | None = None, out
     """
     Regime-aware evaluation using test-period realized volatility and market returns:
     - calm: vol <= p33
-    - crisis: vol > p67
+    - high_vol: vol > p67 (top tercile of the evaluation sample; not a named event)
     - bull: p33 < vol <= p67 AND market return >= 0
     - bear: p33 < vol <= p67 AND market return < 0
 
@@ -441,9 +488,9 @@ def build_regime_table(results: dict, merged_df: pd.DataFrame | None = None, out
 
         regime = np.where(
             actual <= q33, "calm",
-            np.where(actual > q67, "crisis", np.where(ret >= 0, "bull", "bear"))
+            np.where(actual > q67, "high_vol", np.where(ret >= 0, "bull", "bear"))
         )
-        for rg in ["calm", "bull", "bear", "crisis"]:
+        for rg in ["calm", "bull", "bear", "high_vol"]:
             mask = regime == rg
             if mask.sum() == 0:
                 continue
@@ -530,7 +577,8 @@ def build_backtest_table(results: dict, cost_bps: float, output_suffix: str = ""
     return out
 
 
-def mc_dropout_intervals(model, X_test: np.ndarray, target_scaler, passes: int = 50, alpha: float = 0.10):
+def mc_dropout_intervals(model, X_test: np.ndarray, target_scaler, passes: int = 50, alpha: float = 0.10,
+                         offset=None, gate: float = 1.0):
     """
     Monte-Carlo dropout intervals for DL predictions.
     Keeps Dropout active for stochastic sampling while freezing
@@ -559,6 +607,8 @@ def mc_dropout_intervals(model, X_test: np.ndarray, target_scaler, passes: int =
         for _ in range(passes):
             y = _mc_forward(X_test).numpy()
             y = target_scaler.inverse_transform(y).flatten()
+            if offset is not None:      # e.g. the ARIMA forecast when the net models the residual
+                y = np.asarray(offset, dtype=float).flatten()[: len(y)] + gate * y
             preds.append(y)
     finally:
         for layer, trainable in zip(batch_norm_layers, trainable_states):
@@ -609,3 +659,61 @@ def sensitivity_perturbation_metrics(
         "Perturbed_DoC": pert_doc,
         "Delta_DoC": pert_doc - clean_doc,
     }
+
+
+# ──────────────────────────────────────────────────────────────
+# Moving-block bootstrap for RMSE ratios
+# ──────────────────────────────────────────────────────────────
+def block_bootstrap_rmse_ratio(err_model, err_ref, horizon: int = 1, n_boot: int = None,
+                               seed: int = SEED):
+    """
+    95% percentile interval for RMSE(model) / RMSE(reference).
+
+    err_*: forecast errors on the same test rows. Rows are resampled in
+    overlapping blocks of length max(BOOTSTRAP_BLOCK_MIN, 2h) (moving-block
+    bootstrap), which keeps the serial dependence that makes consecutive
+    errors of a persistent target non-independent. The same resampled row
+    indices are applied to both models, so the interval reflects the paired
+    difference. Returns (ratio, lo, hi, block_length).
+    """
+    e1 = np.asarray(err_model, dtype=float).flatten()
+    e2 = np.asarray(err_ref, dtype=float).flatten()
+    n = min(len(e1), len(e2))
+    e1, e2 = e1[:n], e2[:n]
+    B = int(n_boot or BOOTSTRAP_RESAMPLES)
+    L = int(max(BOOTSTRAP_BLOCK_MIN, 2 * horizon))
+    L = min(L, n)
+    rng = np.random.default_rng(seed)
+    n_blocks = int(np.ceil(n / L))
+    starts = rng.integers(0, n - L + 1, size=(B, n_blocks))
+    idx = (starts[:, :, None] + np.arange(L)[None, None, :]).reshape(B, -1)[:, :n]
+    s1 = np.sqrt(np.mean(e1[idx] ** 2, axis=1))
+    s2 = np.sqrt(np.mean(e2[idx] ** 2, axis=1))
+    ratios = s1 / s2
+    point = float(np.sqrt(np.mean(e1 ** 2)) / np.sqrt(np.mean(e2 ** 2)))
+    return point, float(np.quantile(ratios, 0.025)), float(np.quantile(ratios, 0.975)), L
+
+
+def build_ratio_ci_table(results: dict, references, horizon: int, output_suffix: str = ""):
+    """RMSE ratio of every model to each reference model with bootstrap intervals."""
+    rows = []
+    for ref in references:
+        if ref not in results:
+            continue
+        a_ref = np.asarray(results[ref]["actual"], dtype=float)
+        p_ref = np.asarray(results[ref]["predictions"], dtype=float)
+        for name, res in results.items():
+            if name == ref:
+                continue
+            a = np.asarray(res["actual"], dtype=float)
+            p = np.asarray(res["predictions"], dtype=float)
+            n = min(len(a), len(a_ref), len(p), len(p_ref))
+            point, lo, hi, L = block_bootstrap_rmse_ratio(a[:n] - p[:n], a_ref[:n] - p_ref[:n], horizon=horizon)
+            rows.append({"Model": name, "Reference": ref, "RMSE_ratio": point,
+                         "CI_low": lo, "CI_high": hi, "Block": L, "N": n,
+                         "B": int(BOOTSTRAP_RESAMPLES), "CI_excludes_1": bool(lo > 1 or hi < 1)})
+    out = pd.DataFrame(rows)
+    if not out.empty:
+        suf = f"_{output_suffix}" if output_suffix else ""
+        out.to_csv(os.path.join(RESULTS_DIR, f"ratio_ci{suf}.csv"), index=False)
+    return out

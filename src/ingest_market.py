@@ -86,7 +86,13 @@ def fetch_market_data(ticker: str | None = None, use_api: bool = True) -> pd.Dat
         df.columns = df.columns.get_level_values(0)
 
     df.index.name = "Date"
-    available_cols = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in df.columns]
+    # Keep derived columns when they are already present (a cached features file
+    # has Log_Return/Volatility computed and its warm-up rows already removed).
+    # Re-deriving them from a cached file would drop another VOLATILITY_WINDOW
+    # rows on every offline run and, because the result is re-saved, shrink the
+    # cached sample run after run.
+    available_cols = [c for c in ["Open", "High", "Low", "Close", "Volume", "Log_Return", "Volatility"]
+                      if c in df.columns]
     df = df[available_cols].copy()
 
     # Log-returns

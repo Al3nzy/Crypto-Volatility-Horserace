@@ -1,0 +1,69 @@
+{
+  "profile": "standard",
+  "feature_set": "stationary",
+  "tickers": [
+    "BTC-USD",
+    "ETH-USD",
+    "DOGE-USD",
+    "XRP-USD"
+  ],
+  "horizons": [
+    1,
+    3,
+    7
+  ],
+  "dl_seeds": [
+    42,
+    7
+  ],
+  "ahi_seeds": [
+    42
+  ],
+  "baseline_dl_seeds": [
+    42
+  ],
+  "ablation_seeds": [
+    42,
+    7
+  ],
+  "ablation_horizons": [
+    1
+  ],
+  "rolling_seeds": [
+    42
+  ],
+  "rolling": {
+    "enabled": true,
+    "start": "2022-01-01",
+    "step_days": 180,
+    "epochs": 30,
+    "arima_hybrid": false
+  },
+  "cross_asset": {
+    "horizons": [
+      1
+    ],
+    "seeds": [
+      42
+    ]
+  },
+  "purge_train_overlap": true,
+  "garch_estimand": "window",
+  "train_ratio": 0.8,
+  "lookback": 14,
+  "epochs": 100,
+  "mc_dropout_passes": 30,
+  "elapsed_sec_last_invocation": 15713.8,
+  "python": "3.12.9",
+  "platform": "Windows-11-10.0.26220-SP0",
+  "libraries": {
+    "numpy": "2.5.2",
+    "pandas": "3.0.5",
+    "scipy": "1.18.1",
+    "sklearn": "1.9.0",
+    "statsmodels": "0.14.6",
+    "arch": "8.0.0",
+    "tensorflow": "2.21.0"
+  },
+  "signature": "a21ff4af24e2"
+}

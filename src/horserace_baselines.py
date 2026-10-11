@@ -32,9 +32,10 @@ def build_naive_persistence_result(pipeline: dict, forecast_horizon: int) -> dic
 
     X_w, y_w = create_windows(X_raw, y_raw, forecast_horizon=forecast_horizon)
     split_idx = int(len(y_w) * TRAIN_RATIO)
-    y_test_scaled = y_w[split_idx:]
-    tgt = pipeline["tgt_scaler"]
-    y_actual = tgt.inverse_transform(y_test_scaled).flatten()
+    # y_w is built from the raw (unscaled) Volatility column, so it is already
+    # in target units; it must NOT be passed through the target scaler's
+    # inverse transform (that transform only applies to scaled targets).
+    y_actual = y_w[split_idx:].flatten()
     n_test = len(y_actual)
 
     naive = np.empty(n_test, dtype=float)
@@ -87,4 +88,25 @@ def build_svr_result(pipeline: dict) -> dict:
         "dates": dates,
         "rmse": rmse(y_actual[:n], y_pred[:n]),
         "mae": mean_absolute_error(y_actual[:n], y_pred[:n]),
+    }
+
+
+def build_krp_result(pipeline: dict, forecast_horizon: int) -> dict:
+    """Known-return persistence (see src.baselines.krp_forecasts) on the test windows."""
+    from src.baselines import krp_forecasts
+    merged = pipeline["merged_df"]
+    vol = merged["Volatility"].values.astype(float)
+    full = krp_forecasts(merged["Log_Return"].values, forecast_horizon)
+    split_idx = pipeline["split_idx"]
+    start = split_idx + LOOKBACK_WINDOW + forecast_horizon - 1
+    n_test = len(pipeline["X_test"])
+    pred = full[start: start + n_test]
+    actual = vol[start: start + n_test]
+    return {
+        "name": "KRP",
+        "predictions": pred,
+        "actual": actual,
+        "dates": pipeline["test_dates"][:n_test],
+        "rmse": rmse(actual, pred),
+        "mae": mean_absolute_error(actual, pred),
     }

@@ -1,0 +1,13 @@
+ README.md                     | 108 [32m+++[m[31m--[m
+ config.py                     | 100 [32m++++[m[31m-[m
+ main.py                       | 935 [32m++++++++++++++++++[m[31m------------------------[m
+ scripts/build_paper_inputs.py | 161 [32m++++++++[m
+ src/baselines.py              | 137 [32m++++++[m[31m-[m
+ src/evaluate.py               | 172 [32m++++++[m[31m--[m
+ src/fuse_data.py              |  32 [32m+[m[31m-[m
+ src/horserace_baselines.py    |  28 [32m+[m[31m-[m
+ src/ingest_market.py          |   8 [32m+[m[31m-[m
+ src/interpret.py              | 194 [32m+++++++++[m
+ src/protocol.py               | 245 [32m+++++++++++[m
+ tests/test_fixes.py           |  98 [32m+++++[m
+ 12 files changed, 1570 insertions(+), 648 deletions(-)

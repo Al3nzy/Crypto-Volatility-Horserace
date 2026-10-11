@@ -1,0 +1,2 @@
+Ticker,Horizon,NTrain,NTest,NPurged,NFeatures,Features,FeatureSet,TestFirstTarget,TestLastTarget
+XRP-USD,7,1427,359,6,10,Log_Return|Abs_Return|Range_HL|LogVolume_Change|Market_FearGreed|Active_Addresses_LogRatio|Tx_Count_LogRatio|Volatility|RV_Week|RV_Month,stationary,2024-01-07,2024-12-30

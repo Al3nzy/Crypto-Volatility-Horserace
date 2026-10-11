@@ -1,0 +1,12 @@
+Ticker,Feature,Pillar,Status,UniqueValues
+DOGE-USD,Log_Return,market,active,1808
+DOGE-USD,Abs_Return,market,active,1806
+DOGE-USD,Range_HL,market,active,1812
+DOGE-USD,LogVolume_Change,market,active,1812
+DOGE-USD,Market_FearGreed,sentiment,active,87
+DOGE-USD,FinBERT_Polarity,sentiment,dropped_constant,1
+DOGE-USD,Active_Addresses_LogRatio,onchain,active,1812
+DOGE-USD,Tx_Count_LogRatio,onchain,active,1812
+DOGE-USD,Volatility,lagged_vol,active,1811
+DOGE-USD,RV_Week,lagged_vol,active,1812
+DOGE-USD,RV_Month,lagged_vol,active,1812

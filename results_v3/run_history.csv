@@ -1,0 +1,13 @@
+run_ts_utc,profile,feature_set,primary_ticker,forecast_horizon,n_train_samples,n_test_samples,n_features,winner,combo_execution_time_sec
+2026-10-10 20:39:50,standard,stationary,BTC-USD,1,1438,360,10,Residual Hybrid (KRP+DL-resid),533.71
+2026-10-10 21:01:59,standard,stationary,ETH-USD,1,1438,360,10,Residual Hybrid (KRP+DL-resid),801.93
+2026-10-10 21:19:44,standard,stationary,DOGE-USD,1,1438,360,10,Residual Hybrid (KRP+DL-resid),506.19
+2026-10-10 21:39:01,standard,stationary,XRP-USD,1,1438,360,10,Residual Hybrid (KRP+DL-resid),599.13
+2026-10-10 22:25:40,standard,stationary,BTC-USD,3,1434,360,10,GJR-GARCH,419.01
+2026-10-10 22:41:26,standard,stationary,ETH-USD,3,1434,360,10,GJR-GARCH,453.3
+2026-10-10 22:57:22,standard,stationary,DOGE-USD,3,1434,360,10,Residual Hybrid (KRP+DL-resid),459.15
+2026-10-10 23:15:21,standard,stationary,XRP-USD,3,1434,360,10,Residual Hybrid (KRP+DL-resid),592.52
+2026-10-10 23:34:00,standard,stationary,BTC-USD,7,1427,359,10,LSTM-only,645.87
+2026-10-10 23:51:43,standard,stationary,ETH-USD,7,1427,359,10,GRU-only,517.88
+2026-10-11 00:08:55,standard,stationary,DOGE-USD,7,1427,359,10,GARCH,512.53
+2026-10-11 00:26:17,standard,stationary,XRP-USD,7,1427,359,10,LSTM-only,584.03

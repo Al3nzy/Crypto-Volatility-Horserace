@@ -1,0 +1,2 @@
+Holdout,Horizon,RMSE,MAE,Scaling,TrainAssets,N_train,N_test,Seeds
+DOGE-USD,1,0.00868149481924967,0.006941362607646971,per_asset,BTC-USD|ETH-USD|XRP-USD,4314,360,1

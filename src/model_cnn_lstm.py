@@ -44,7 +44,7 @@ from config import (
     CNN_FILTERS, CNN_KERNEL_SIZE,
     LSTM_UNITS, NUM_ATTENTION_HEADS, ATTENTION_KEY_DIM,
     DROPOUT_RATE, LEARNING_RATE, L2_REG,
-    BATCH_SIZE, EPOCHS, PATIENCE, VALIDATION_SPLIT, SEED,
+    BATCH_SIZE, EPOCHS, PATIENCE, VALIDATION_SPLIT, SEED, EARLY_STOP_MIN_DELTA,
 )
 
 
@@ -184,7 +184,7 @@ def train_model(
     """
     cb = [
         callbacks.EarlyStopping(
-            monitor="val_loss", patience=PATIENCE,
+            monitor="val_loss", patience=PATIENCE, min_delta=EARLY_STOP_MIN_DELTA,
             restore_best_weights=True, verbose=verbose,
         ),
         callbacks.ReduceLROnPlateau(

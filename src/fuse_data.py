@@ -19,6 +19,7 @@ from config import (
     FULL_FEATURES,
     LOOKBACK_WINDOW,
     PRIMARY_TICKER,
+    PURGE_TRAIN_OVERLAP,
     TICKERS,
     TRAIN_RATIO,
 )
@@ -118,6 +119,24 @@ def fuse_pillars(primary_ticker: str | None = None, use_cache: bool = True) -> p
             lambda s: s.rolling(22, min_periods=1).mean()
         )
 
+    # Scale-free (stationary) transforms of the market and on-chain channels.
+    # Each uses information up to and including the row itself, so there is
+    # no look-ahead relative to the window boundary.
+    def _safe_log_ratio(num, den):
+        return np.log(np.clip(num, 1e-12, None) / np.clip(den, 1e-12, None))
+
+    if {"Close", "Open", "High", "Low"} <= set(merged.columns):
+        merged["Abs_Return"] = merged["Log_Return"].abs() if "Log_Return" in merged.columns else np.nan
+        merged["Range_HL"] = _safe_log_ratio(merged["High"], merged["Low"])
+        merged["OC_Return"] = _safe_log_ratio(merged["Close"], merged["Open"])
+    if "Volume" in merged.columns:
+        lv = np.log1p(merged["Volume"].clip(lower=0))
+        merged["LogVolume_Change"] = lv.groupby(merged["Asset"]).diff().clip(-3, 3).fillna(0.0)
+    for raw, new in (("Active_Addresses", "Active_Addresses_LogRatio"), ("Tx_Count", "Tx_Count_LogRatio")):
+        if raw in merged.columns:
+            mean30 = merged.groupby("Asset")[raw].transform(lambda s: s.rolling(30, min_periods=1).mean())
+            merged[new] = _safe_log_ratio(merged[raw].clip(lower=0) + 1.0, mean30.clip(lower=0) + 1.0)
+
     required_cols = [c for c in FULL_FEATURES + ["Volatility"] if c in merged.columns]
     merged.dropna(subset=required_cols, inplace=True)
     merged.set_index("Date", inplace=True)
@@ -133,13 +152,22 @@ FEATURE_COLS = FULL_FEATURES
 TARGET_COL = "Volatility"
 
 
-def scale_window_splits(X_train, X_test, y_train, y_test):
+def scale_window_splits(X_train, X_test, y_train, y_test, target_mode: str = "minmax"):
     """
     Fit scalers on TRAIN only (no look-ahead leakage), then transform both
     train and test windows.
+
+    target_mode="minmax"  : targets mapped to [0, 1] (volatility levels).
+    target_mode="standard": targets centred and divided by the training std,
+        with the TRAINING targets winsorised at +/-5 std. Used for forecast
+        residuals, which are centred near zero and heavy-tailed: a min-max map
+        would let a few spikes (e.g. DOGE in 2021) stretch the range, so that a
+        small error in the network's scaled output becomes a large error in
+        volatility units.
     """
+    from sklearn.preprocessing import StandardScaler
     feature_scaler = MinMaxScaler()
-    target_scaler = MinMaxScaler()
+    target_scaler = StandardScaler() if target_mode == "standard" else MinMaxScaler()
 
     n_features = X_train.shape[-1]
 
@@ -157,6 +185,8 @@ def scale_window_splits(X_train, X_test, y_train, y_test):
     target_scaler.fit(y_train)
     y_train_scaled = target_scaler.transform(y_train)
     y_test_scaled = target_scaler.transform(y_test)
+    if target_mode == "standard":
+        y_train_scaled = np.clip(y_train_scaled, -5.0, 5.0)
 
     return X_train_scaled, X_test_scaled, y_train_scaled, y_test_scaled, feature_scaler, target_scaler
 
@@ -179,11 +209,22 @@ def create_windows(X: np.ndarray, y: np.ndarray, forecast_horizon: int = FORECAS
 # ──────────────────────────────────────────────────────────────
 # Train / test split (time-ordered, no shuffle)
 # ──────────────────────────────────────────────────────────────
-def split_data(X_win, y_win):
+def purge_count(forecast_horizon: int) -> int:
+    """
+    Number of trailing training windows whose label is realized after the
+    first test origin. The label of window k is observed at row k+L+h-1 while
+    the first test window (index s) is issued at row s+L-1, so training
+    windows s-h+1 .. s-1 (h-1 of them) peek into the future of that origin.
+    """
+    return max(0, int(forecast_horizon) - 1) if PURGE_TRAIN_OVERLAP else 0
+
+
+def split_data(X_win, y_win, purge: int = 0):
     split_idx = int(len(X_win) * TRAIN_RATIO)
-    X_train, X_test = X_win[:split_idx], X_win[split_idx:]
-    y_train, y_test = y_win[:split_idx], y_win[split_idx:]
-    print(f"[Split] Train {X_train.shape[0]} | Test {X_test.shape[0]}")
+    train_end = split_idx - int(purge)
+    X_train, X_test = X_win[:train_end], X_win[split_idx:]
+    y_train, y_test = y_win[:train_end], y_win[split_idx:]
+    print(f"[Split] Train {X_train.shape[0]} (purged {int(purge)}) | Test {X_test.shape[0]}")
     return X_train, X_test, y_train, y_test
 
 
@@ -230,10 +271,13 @@ def run_fusion_pipeline(
         y_raw = merged[[target_col]].values
 
     X_win, y_win = create_windows(X_raw, y_raw, forecast_horizon=forecast_horizon)
-    X_train, X_test, y_train, y_test = split_data(X_win, y_win)
+    X_train, X_test, y_train, y_test = split_data(
+        X_win, y_win, purge=purge_count(forecast_horizon)
+    )
 
     X_train, X_test, y_train, y_test, feat_scaler, tgt_scaler = scale_window_splits(
-        X_train, X_test, y_train, y_test
+        X_train, X_test, y_train, y_test,
+        target_mode="standard" if residual_target is not None else "minmax",
     )
 
     # Also keep the raw merged df date index for plotting later
@@ -249,6 +293,12 @@ def run_fusion_pipeline(
         "tgt_scaler": tgt_scaler,
         "test_dates": test_dates,
         "feature_cols": feature_cols,
+        # Window bookkeeping used to align external forecasts (ARIMA) with the
+        # network's windows: window k <-> merged row k + L + h - 1.
+        "n_windows": int(len(X_win)),
+        "split_idx": int(split_idx),
+        "n_purged": int(purge_count(forecast_horizon)),
+        "horizon": int(forecast_horizon),
     }
 
 
@@ -289,7 +339,7 @@ def run_fusion_pipeline_pooled(
         y_raw = merged[[target_col]].values
 
         X_win, y_win = create_windows(X_raw, y_raw, forecast_horizon=forecast_horizon)
-        X_tr, X_te, y_tr, y_te = split_data(X_win, y_win)
+        X_tr, X_te, y_tr, y_te = split_data(X_win, y_win, purge=purge_count(forecast_horizon))
         X_train_parts.append(X_tr)
         X_test_parts.append(X_te)
         y_train_parts.append(y_tr)

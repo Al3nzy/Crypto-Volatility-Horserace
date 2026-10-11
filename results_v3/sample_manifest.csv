@@ -1,0 +1,13 @@
+Ticker,Horizon,NTrain,NTest,NPurged,NFeatures,Features,FeatureSet,TestFirstTarget,TestLastTarget
+BTC-USD,1,1438,360,0,10,Log_Return|Abs_Return|Range_HL|LogVolume_Change|Market_FearGreed|Active_Addresses_LogRatio|Tx_Count_LogRatio|Volatility|RV_Week|RV_Month,stationary,2024-01-06,2024-12-30
+BTC-USD,3,1434,360,2,10,Log_Return|Abs_Return|Range_HL|LogVolume_Change|Market_FearGreed|Active_Addresses_LogRatio|Tx_Count_LogRatio|Volatility|RV_Week|RV_Month,stationary,2024-01-06,2024-12-30
+BTC-USD,7,1427,359,6,10,Log_Return|Abs_Return|Range_HL|LogVolume_Change|Market_FearGreed|Active_Addresses_LogRatio|Tx_Count_LogRatio|Volatility|RV_Week|RV_Month,stationary,2024-01-07,2024-12-30
+DOGE-USD,1,1438,360,0,10,Log_Return|Abs_Return|Range_HL|LogVolume_Change|Market_FearGreed|Active_Addresses_LogRatio|Tx_Count_LogRatio|Volatility|RV_Week|RV_Month,stationary,2024-01-06,2024-12-30
+DOGE-USD,3,1434,360,2,10,Log_Return|Abs_Return|Range_HL|LogVolume_Change|Market_FearGreed|Active_Addresses_LogRatio|Tx_Count_LogRatio|Volatility|RV_Week|RV_Month,stationary,2024-01-06,2024-12-30
+DOGE-USD,7,1427,359,6,10,Log_Return|Abs_Return|Range_HL|LogVolume_Change|Market_FearGreed|Active_Addresses_LogRatio|Tx_Count_LogRatio|Volatility|RV_Week|RV_Month,stationary,2024-01-07,2024-12-30
+ETH-USD,1,1438,360,0,10,Log_Return|Abs_Return|Range_HL|LogVolume_Change|Market_FearGreed|Active_Addresses_LogRatio|Tx_Count_LogRatio|Volatility|RV_Week|RV_Month,stationary,2024-01-06,2024-12-30
+ETH-USD,3,1434,360,2,10,Log_Return|Abs_Return|Range_HL|LogVolume_Change|Market_FearGreed|Active_Addresses_LogRatio|Tx_Count_LogRatio|Volatility|RV_Week|RV_Month,stationary,2024-01-06,2024-12-30
+ETH-USD,7,1427,359,6,10,Log_Return|Abs_Return|Range_HL|LogVolume_Change|Market_FearGreed|Active_Addresses_LogRatio|Tx_Count_LogRatio|Volatility|RV_Week|RV_Month,stationary,2024-01-07,2024-12-30
+XRP-USD,1,1438,360,0,10,Log_Return|Abs_Return|Range_HL|LogVolume_Change|Market_FearGreed|Active_Addresses_LogRatio|Tx_Count_LogRatio|Volatility|RV_Week|RV_Month,stationary,2024-01-06,2024-12-30
+XRP-USD,3,1434,360,2,10,Log_Return|Abs_Return|Range_HL|LogVolume_Change|Market_FearGreed|Active_Addresses_LogRatio|Tx_Count_LogRatio|Volatility|RV_Week|RV_Month,stationary,2024-01-06,2024-12-30
+XRP-USD,7,1427,359,6,10,Log_Return|Abs_Return|Range_HL|LogVolume_Change|Market_FearGreed|Active_Addresses_LogRatio|Tx_Count_LogRatio|Volatility|RV_Week|RV_Month,stationary,2024-01-07,2024-12-30

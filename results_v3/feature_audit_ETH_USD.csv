@@ -1,0 +1,12 @@
+Ticker,Feature,Pillar,Status,UniqueValues
+ETH-USD,Log_Return,market,active,1812
+ETH-USD,Abs_Return,market,active,1812
+ETH-USD,Range_HL,market,active,1812
+ETH-USD,LogVolume_Change,market,active,1812
+ETH-USD,Market_FearGreed,sentiment,active,87
+ETH-USD,FinBERT_Polarity,sentiment,dropped_constant,1
+ETH-USD,Active_Addresses_LogRatio,onchain,active,1812
+ETH-USD,Tx_Count_LogRatio,onchain,active,1812
+ETH-USD,Volatility,lagged_vol,active,1812
+ETH-USD,RV_Week,lagged_vol,active,1812
+ETH-USD,RV_Month,lagged_vol,active,1812

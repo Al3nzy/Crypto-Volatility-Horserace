@@ -25,7 +25,12 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error
 from statsmodels.tsa.arima.model import ARIMA
 from arch import arch_model
 
-from config import BASELINE_N_JOBS, LOOKBACK_WINDOW, TRAIN_RATIO
+import hashlib
+import os
+
+from config import (BASELINE_N_JOBS, CACHE_DIR, GARCH_ESTIMAND, LOOKBACK_WINDOW, TRAIN_RATIO,
+                    USE_FORECAST_CACHE, VOLATILITY_WINDOW)
+from src.fuse_data import purge_count
 
 warnings.filterwarnings("ignore")
 
@@ -57,10 +62,22 @@ def _arima_step(vals: np.ndarray, t0: int, forecast_horizon: int, order):
 def _garch_step(scaled_ret: pd.Series, t0: int, forecast_horizon: int, asymmetric: bool):
     """
     Fit GARCH(1,1) (or GJR-GARCH when asymmetric=True) on scaled_ret up to
-    and including t0, forecast forecast_horizon steps ahead. Same fallback
-    semantics as the original sequential implementation.
+    and including t0 and return a forecast of the realized-volatility target
+    sigma_{t0+h}.
+
+    The target is the sample standard deviation of the W=VOLATILITY_WINDOW
+    daily returns ending at t0+h. With GARCH_ESTIMAND="window" the forecast
+    targets exactly that quantity: the W-h returns already observed inside the
+    window enter as data and the h unobserved days enter through their
+    forecast conditional variances,
+        var_hat = (sum_known r^2 + sum_{j<=h} v_j - (sum_known r)^2 / W) / (W-1).
+    With GARCH_ESTIMAND="daily" the legacy one-day conditional standard
+    deviation sqrt(v_h) is returned instead. Returns are in percent, so the
+    result is divided by 100. Fallback on a failed fit: the std of the last
+    14 returns, as before.
     """
     train_window = scaled_ret.iloc[: t0 + 1]
+    W = int(VOLATILITY_WINDOW)
     try:
         kwargs = dict(vol="Garch", p=1, q=1, mean="Constant", dist="Normal")
         if asymmetric:
@@ -68,17 +85,20 @@ def _garch_step(scaled_ret: pd.Series, t0: int, forecast_horizon: int, asymmetri
         am = arch_model(train_window, **kwargs)
         res = am.fit(disp="off", show_warning=False)
         forecast = res.forecast(horizon=forecast_horizon)
-        var_h = forecast.variance.values[-1, forecast_horizon - 1]
-        sigma = np.sqrt(var_h) / 100.0
+        v = np.asarray(forecast.variance.values[-1, :forecast_horizon], dtype=float)
+        if GARCH_ESTIMAND == "daily" or forecast_horizon >= W:
+            sigma = np.sqrt(v[forecast_horizon - 1]) / 100.0
+        else:
+            known = train_window.values[-(W - forecast_horizon):].astype(float)
+            ss = float(np.sum(known ** 2) + np.sum(v) - (np.sum(known) ** 2) / W)
+            sigma = np.sqrt(max(ss / (W - 1), 1e-12)) / 100.0
     except Exception:
         sigma = train_window.iloc[-14:].std() / 100.0
     return sigma
 
 
-# ──────────────────────────────────────────────────────────────
-# ARIMA baseline
-# ──────────────────────────────────────────────────────────────
-def run_arima(vol_series: pd.Series, forecast_horizon: int = 1, order=(5, 1, 0), n_jobs: int = 1):
+def run_arima(vol_series: pd.Series, forecast_horizon: int = 1, order=(5, 1, 0), n_jobs: int = 1,
+              precomputed_full=None):
     """
     Rolling h-step-ahead ARIMA forecast on the window-aligned test portion.
     """
@@ -95,11 +115,16 @@ def run_arima(vol_series: pd.Series, forecast_horizon: int = 1, order=(5, 1, 0),
     t0s = [k + LOOKBACK_WINDOW - 1 for k in ks]
     target_idxs = [t0 + forecast_horizon for t0 in t0s]
 
-    print(f"[ARIMA] Forecasting {len(ks)} steps (h={forecast_horizon}) using n_jobs={n_jobs} …")
-    predictions = Parallel(n_jobs=n_jobs)(
-        delayed(_arima_step)(vals, t0, forecast_horizon, order) for t0 in t0s
-    )
-    predictions = np.array(predictions)
+    if precomputed_full is not None:
+        # Same forecasts as the full-series rolling run (forecast of row T made at row T-h),
+        # so the ARIMA baseline and the linear stage of AHI are identical by construction.
+        predictions = np.asarray(precomputed_full, dtype=float)[target_idxs]
+    else:
+        print(f"[ARIMA] Forecasting {len(ks)} steps (h={forecast_horizon}) using n_jobs={n_jobs} …")
+        predictions = Parallel(n_jobs=n_jobs)(
+            delayed(_arima_step)(vals, t0, forecast_horizon, order) for t0 in t0s
+        )
+        predictions = np.array(predictions)
     actuals = vals[target_idxs]
     test_dates = idx[target_idxs]
 
@@ -227,8 +252,9 @@ def run_har_rv(merged_df: pd.DataFrame, forecast_horizon: int = 1):
         y_targets[k] = vol[T]
 
     split_idx = int(n_windows * TRAIN_RATIO)
-    X_train, X_test = X_har[:split_idx], X_har[split_idx:]
-    y_train, y_test = y_targets[:split_idx], y_targets[split_idx:]
+    train_end = split_idx - purge_count(forecast_horizon)
+    X_train, X_test = X_har[:train_end], X_har[split_idx:]
+    y_train, y_test = y_targets[:train_end], y_targets[split_idx:]
     X_train_b = np.column_stack([np.ones(len(X_train)), X_train])
     X_test_b = np.column_stack([np.ones(len(X_test)), X_test])
     coef, _, rank, _ = np.linalg.lstsq(X_train_b, y_train, rcond=None)
@@ -276,6 +302,16 @@ def get_arima_forecasts_for_residuals(
     """
     vals = vol_series.values
     n = len(vals)
+    cache_path = None
+    if USE_FORECAST_CACHE:
+        import statsmodels
+        key = hashlib.md5(np.ascontiguousarray(vals, dtype=float).tobytes()
+                          + f"|{order}|{forecast_horizon}|{min_history}|{statsmodels.__version__}".encode()).hexdigest()[:16]
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        cache_path = os.path.join(CACHE_DIR, f"arima_full_{key}.npy")
+        if os.path.exists(cache_path):
+            print(f"[ARIMA-Residual] Loaded cached rolling forecasts ({os.path.basename(cache_path)})")
+            return np.load(cache_path), vals
     preds = np.full(n, np.nan)
     warmup = min_history + forecast_horizon
     preds[:warmup] = np.mean(vals[:min_history])  # warmup fallback
@@ -293,6 +329,8 @@ def get_arima_forecasts_for_residuals(
     for t, val in zip(t_list, results):
         preds[t] = val
 
+    if cache_path is not None:
+        np.save(cache_path, preds)
     return preds, vals
 
 
@@ -304,14 +342,17 @@ def run_all_baselines(
     forecast_horizon: int = 1,
     include_har_gjr: bool = True,
     n_jobs: int = BASELINE_N_JOBS,
+    arima_full=None,
 ):
     """
     Run ARIMA, GARCH(1,1), and optionally HAR-RV + GJR-GARCH on merged panel for given horizon.
+    arima_full: optional full-series rolling ARIMA forecasts (see get_arima_forecasts_for_residuals).
     """
     vol_series = merged_df["Volatility"]
     ret_series = merged_df["Log_Return"]
 
-    arima_res = run_arima(vol_series, forecast_horizon=forecast_horizon, n_jobs=n_jobs)
+    arima_res = run_arima(vol_series, forecast_horizon=forecast_horizon, n_jobs=n_jobs,
+                          precomputed_full=arima_full)
     garch_res = run_garch(ret_series, vol_series, forecast_horizon=forecast_horizon, n_jobs=n_jobs)
 
     out = {}
@@ -329,4 +370,66 @@ def run_all_baselines(
         if gjr_res is not None:
             out["GJR-GARCH"] = gjr_res
 
+    return out
+
+
+# ──────────────────────────────────────────────────────────────
+# Origin-based helpers used by the rolling-origin evaluation
+# ──────────────────────────────────────────────────────────────
+def garch_forecasts_at_origins(returns_series: pd.Series, origins, forecast_horizon: int,
+                               asymmetric: bool = False, n_jobs: int = 1) -> np.ndarray:
+    """Forecast sigma_{t0+h} from a model fitted on returns up to each origin t0."""
+    scaled = returns_series * 100
+    out = Parallel(n_jobs=n_jobs)(
+        delayed(_garch_step)(scaled, int(t0), forecast_horizon, asymmetric) for t0 in origins
+    )
+    return np.asarray(out, dtype=float)
+
+
+def har_design(vol: np.ndarray, forecast_horizon: int):
+    """HAR-RV regressors/targets for every window k (origin t0=k+L-1, target t0+h)."""
+    n_windows = len(vol) - LOOKBACK_WINDOW - forecast_horizon + 1
+    X = np.zeros((n_windows, 3))
+    y = np.zeros(n_windows)
+    for k in range(n_windows):
+        t0 = k + LOOKBACK_WINDOW - 1
+        X[k] = [vol[t0], np.mean(vol[max(0, t0 - 4): t0 + 1]), np.mean(vol[max(0, t0 - 21): t0 + 1])]
+        y[k] = vol[t0 + forecast_horizon]
+    return X, y
+
+
+# ──────────────────────────────────────────────────────────────
+# Known-return persistence (window-aware persistence benchmark)
+# ──────────────────────────────────────────────────────────────
+def krp_forecasts(returns: np.ndarray, forecast_horizon: int, window: int = None) -> np.ndarray:
+    """
+    Known-return persistence forecast of the rolling target for every row.
+
+    The target sigma_T is the sample std of the W daily returns ending at T. At
+    origin t0 = T-h, the W-h returns r_{T-W+1..t0} are already observed and only
+    h are not. Persistence forecasts that ignore this (naive sigma_{t0}, ARIMA or
+    HAR-RV on the sigma series) discard information the target mechanically
+    contains. This benchmark keeps it: the observed returns enter as data and
+    each unobserved day is assigned the mean squared observed return m2,
+        var_hat = (sum r^2 + h*m2 - (sum r)^2 / W) / (W-1),
+    which is the expected sample variance if the unobserved returns have zero
+    mean and variance m2. It has no parameters and no fitting. out[T] is the
+    forecast of sigma_T made at row T-h (NaN where the window is incomplete).
+    """
+    W = int(window or VOLATILITY_WINDOW)
+    r = np.asarray(returns, dtype=float)
+    n = len(r)
+    h = int(forecast_horizon)
+    out = np.full(n, np.nan)
+    if h >= W:
+        return out
+    n_known = W - h
+    for T in range(h + n_known - 1, n):
+        t0 = T - h
+        known = r[t0 - n_known + 1: t0 + 1]
+        if len(known) < n_known or np.isnan(known).any():
+            continue
+        s1, s2 = known.sum(), (known ** 2).sum()
+        m2 = s2 / n_known
+        out[T] = np.sqrt(max((s2 + h * m2 - s1 ** 2 / W) / (W - 1), 1e-18))
     return out

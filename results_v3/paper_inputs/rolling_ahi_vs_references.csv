@@ -1,0 +1,13 @@
+Reference,Model,h,MeanPct,CasesBetter
+ARIMA,Residual Hybrid (KRP+DL-resid),1,-25.088476093211618,4
+ARIMA,Residual Hybrid (KRP+DL-resid),3,-21.239068330587415,4
+ARIMA,Residual Hybrid (KRP+DL-resid),7,-14.006143254300312,4
+HAR-RV,Residual Hybrid (KRP+DL-resid),1,-24.77954718975252,4
+HAR-RV,Residual Hybrid (KRP+DL-resid),3,-20.316771177627352,4
+HAR-RV,Residual Hybrid (KRP+DL-resid),7,-9.36890270835529,4
+KRP,Residual Hybrid (KRP+DL-resid),1,-0.8615443831174907,4
+KRP,Residual Hybrid (KRP+DL-resid),3,-0.9299791620468539,2
+KRP,Residual Hybrid (KRP+DL-resid),7,-4.192652409235059,4
+Naive_Persistence,Residual Hybrid (KRP+DL-resid),1,-25.458522011233832,4
+Naive_Persistence,Residual Hybrid (KRP+DL-resid),3,-21.940522212966286,4
+Naive_Persistence,Residual Hybrid (KRP+DL-resid),7,-14.48481614799209,4
